@@ -101,3 +101,9 @@ examples/*/.env
 # Plugin-specific log files
 cloudflared.log
 vite-output.log
+
+# Development-specific files and folders
+.cursor/
+.cursorindexingignore
+.repomix-output.txt
+.specstory/
