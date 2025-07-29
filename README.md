@@ -150,7 +150,7 @@ cloudflareTunnel({
   // Optional: Resource cleanup configuration
   cleanup: {
     autoCleanup: true,                 // Clean up mismatched resources on startup
-    dryRun: false                      // Set to false to actually delete resources  
+    dryRun: false                      // Actually delete resources (default: false)
   }
 })
 ```
@@ -177,18 +177,18 @@ cloudflareTunnel({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `autoCleanup` | `boolean` | `true` | Automatically clean up mismatched resources from current tunnel on startup |
-| `dryRun` | `boolean` | `true` | If true, only list mismatched resources without deleting them |
+| `dryRun` | `boolean` | `false` | If true, only list mismatched resources without deleting them |
 | `preserveTunnels` | `string[]` | `[]` | **(Deprecated)** No longer used - cleanup only affects current tunnel |
 
 ## 🧹 Resource Management & Cleanup
 
-The plugin automatically tags resources it creates and can clean up orphaned resources from previous runs or crashes.
+The plugin automatically tags resources it creates and can clean up mismatched resources from previous runs or configuration changes. **By default, cleanup actively deletes mismatched resources** to prevent cloud resource accumulation.
 
 ### Automatic Resource Tagging
 
 **DNS Records:** All DNS records created by the plugin include a comment field with metadata:
-- Format: `cloudflare-tunnel-vite-plugin:tunnelName:recordType:date`
-- Example: `cloudflare-tunnel-vite-plugin:vite-tunnel:cname:2025-01-27`
+- Format: `cloudflare-tunnel-vite-plugin:tunnelName`
+- Example: `cloudflare-tunnel-vite-plugin:vite-tunnel`
 
 **SSL Certificates:** Since Cloudflare doesn't support metadata fields, the plugin adds a special "tag" hostname to certificates for identification:
 - Format: `cf-tunnel-plugin-{tunnelName}-{date}.{parentDomain}`
@@ -201,7 +201,15 @@ cloudflareTunnel({
   hostname: 'dev.example.com',
   cleanup: {
     // autoCleanup: true,                 // Enabled by default
-    dryRun: false                         // Actually delete resources (default: true)
+    // dryRun: false                      // Actually delete resources (default)
+  }
+})
+
+// To enable dry run mode:
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  cleanup: {
+    dryRun: true                          // Only list mismatched resources, don't delete
   }
 })
 
@@ -220,17 +228,18 @@ cloudflareTunnel({
 2. **Configuration Mismatch Detection:** 
    - **DNS Records:** Finds records from current tunnel that don't match current hostname/target
    - **SSL Certificates:** Finds certificates from current tunnel that don't cover current hostname
-3. **Safe Cleanup:** DNS records are deleted automatically, SSL certificates require manual review
+3. **Safe Cleanup:** DNS records are deleted automatically by default, SSL certificates require manual review
 4. **Preserves Other Tunnels:** Resources from different tunnel names are never touched
+5. **No Resource Leaks:** Default behavior prevents accumulation of stale cloud resources
 
 ### Manual Cleanup
 
 If you need to manually clean up resources:
 
-1. **List orphaned DNS records:**
+1. **List DNS records by tunnel:**
    ```bash
-   # Using Cloudflare API
-   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/dns_records?comment=cloudflare-tunnel-vite-plugin&match=all" \
+   # Using Cloudflare API - replace 'your-tunnel-name' with actual tunnel name
+   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/dns_records?comment=cloudflare-tunnel-vite-plugin:your-tunnel-name&match=all" \
      -H "Authorization: Bearer YOUR_API_TOKEN"
    ```
 
@@ -439,6 +448,7 @@ cloudflareTunnel({
 
 - **API Token Security** - Never commit API tokens to version control
 - **Environment Variables** - Store tokens in `.env` files (add to `.gitignore`)
+- **Token Logging** - The plugin never logs your API token in debug output for security
 
 ## 🤝 Contributing
 
