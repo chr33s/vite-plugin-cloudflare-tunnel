@@ -17,6 +17,7 @@ import { spawn, exec } from "node:child_process";
 import { z } from "zod";
 import { config as dotEnvConfig } from "dotenv";
 
+
 // import { inspect } from "util";
 // // log infinite depth objects using node settings
 // inspect.defaultOptions.depth = null;
@@ -58,6 +59,7 @@ const DNSRecordSchema = z.object({
   name: z.string(),
   content: z.string(),
   proxied: z.boolean(),
+  comment: z.string().optional(),
 });
 
 // Type definitions (exported for potential external use)
@@ -149,6 +151,29 @@ export interface CloudflareTunnelOptions {
    * @default false
    */
   debug?: boolean;
+
+  /**
+   * Cleanup configuration for managing orphaned resources
+   */
+  cleanup?: {
+    /**
+     * Whether to automatically clean up orphaned DNS records on startup
+     * @default true
+     */
+    autoCleanup?: boolean;
+    
+    /**
+     * Whether to perform a dry run (list orphaned resources without deleting)
+     * @default true
+     */
+    dryRun?: boolean;
+    
+    /**
+     * Array of tunnel names to preserve during cleanup (in addition to current tunnel)
+     * @default []
+     */
+    preserveTunnels?: string[];
+  };
 }
 
 /**
@@ -189,6 +214,8 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     exitHandlersRegistered?: boolean;
     configHash?: string;
     shuttingDown?: boolean;
+    // Allow dynamic keys for SSL certificate tracking
+    [key: string]: any;
   };
 
   const globalState: GlobalState = (globalThis as any)[GLOBAL_STATE] ?? {};
@@ -217,6 +244,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     dns: dnsOption,
     ssl: sslOption,
     debug = false,
+    cleanup: cleanupConfig = {},
   } = options;
 
   // Internal debug logger – prints only when `debug` flag enabled
@@ -268,6 +296,150 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   // ---------------------------------------------------------------------
   // Helper to call Cloudflare API (also restored).
   // ---------------------------------------------------------------------
+
+  /**
+   * Track SSL certificates created by this plugin
+   * Since SSL certificates don't support custom metadata, we track them by hostname patterns
+   */
+  const trackSslCertificate = (
+    certificateId: string,
+    hosts: string[],
+    tunnelName: string,
+    timestamp: string = new Date().toISOString()
+  ) => {
+    // Store certificate tracking info in global state for cleanup later
+    const trackingKey = `ssl-cert-${certificateId}`;
+    globalState[trackingKey] = {
+      id: certificateId,
+      hosts,
+      tunnelName,
+      timestamp,
+      pluginVersion: '1.0.0'
+    };
+    debugLog(`Tracking SSL certificate: ${certificateId} for hosts: ${hosts.join(', ')}`);
+  };
+
+  /**
+   * Find orphaned SSL certificates created by this plugin using tag hostnames
+   */
+  const findOrphanedSslCertificates = async (
+    apiToken: string,
+    zoneId: string,
+    activeTunnelNames: string[] = []
+  ): Promise<any[]> => {
+    try {
+      const certPacks: any = await cf(apiToken, "GET", `/zones/${zoneId}/ssl/certificate_packs?status=all`, undefined, z.any());
+      const allCerts: any[] = Array.isArray(certPacks) ? certPacks : (certPacks.result || []);
+      
+      // Find certificates created by our plugin (containing tag hostnames)
+      const pluginCerts = allCerts.filter(cert => {
+        const certHosts = cert.hostnames || cert.hosts || [];
+        
+        // Look for our tag hostname pattern: cf-tunnel-plugin-{tunnelName}-{date}.{domain}
+        return certHosts.some((host: string) => 
+          host.startsWith('cf-tunnel-plugin-') && host.includes('.')
+        );
+      });
+      
+      debugLog(`Found ${pluginCerts.length} SSL certificates created by plugin`);
+      
+      // From plugin certificates, find orphaned ones (not from active tunnels)
+      const orphanedCerts = pluginCerts.filter(cert => {
+        const certHosts = cert.hostnames || cert.hosts || [];
+        
+        // Extract tunnel name from tag hostname
+        const tagHost = certHosts.find((host: string) => host.startsWith('cf-tunnel-plugin-'));
+        if (!tagHost) return false;
+        
+        // Parse: cf-tunnel-plugin-{tunnelName}-{date}.{domain}
+        const match = tagHost.match(/^cf-tunnel-plugin-([^-]+)-\d+\./);
+        if (!match) return false;
+        
+        const certTunnelName = match[1];
+        return !activeTunnelNames.includes(certTunnelName);
+      });
+      
+      debugLog(`Found ${orphanedCerts.length} orphaned SSL certificates`, orphanedCerts.map(c => ({ 
+        id: c.id, 
+        hosts: c.hostnames || c.hosts 
+      })));
+      
+      return orphanedCerts;
+    } catch (error) {
+      console.error(`[cloudflare-tunnel] ❌ SSL certificate listing failed: ${(error as Error).message}`);
+      return [];
+    }
+  };
+
+  /**
+   * Cleanup orphaned DNS records created by this plugin
+   * @param apiToken Cloudflare API token
+   * @param zoneId Zone ID to clean up
+   * @param activeTunnelNames Array of currently active tunnel names to preserve
+   * @param dryRun If true, only list what would be deleted without actually deleting
+   */
+  const cleanupOrphanedDnsRecords = async (
+    apiToken: string,
+    zoneId: string,
+    activeTunnelNames: string[] = [],
+    dryRun: boolean = true
+  ): Promise<{ found: DNSRecord[], deleted: DNSRecord[] }> => {
+    try {
+      // Find all DNS records created by our plugin
+      const pluginDnsRecords = await cf(
+        apiToken,
+        "GET",
+        `/zones/${zoneId}/dns_records?comment=cloudflare-tunnel-vite-plugin&match=all`,
+        undefined,
+        z.array(DNSRecordSchema)
+      );
+
+      debugLog(`Found ${pluginDnsRecords.length} DNS records created by plugin`);
+
+      // Identify orphaned records (not in active tunnel names)
+      const orphanedRecords = pluginDnsRecords.filter(record => {
+        if (!record.comment) return false;
+        
+        // Parse comment format: cloudflare-tunnel-vite-plugin:tunnelName:recordType:date
+        const commentParts = record.comment.split(':');
+        if (commentParts.length < 2) return false;
+        
+        const tunnelName = commentParts[1];
+        return !activeTunnelNames.includes(tunnelName);
+      });
+
+      debugLog(`Found ${orphanedRecords.length} orphaned DNS records`, orphanedRecords.map(r => ({ name: r.name, comment: r.comment })));
+
+      const deletedRecords: DNSRecord[] = [];
+      
+      if (!dryRun && orphanedRecords.length > 0) {
+        console.log(`[cloudflare-tunnel] 🧹 Cleaning up ${orphanedRecords.length} orphaned DNS records...`);
+        
+        for (const record of orphanedRecords) {
+          try {
+            await cf(apiToken, "DELETE", `/zones/${zoneId}/dns_records/${record.id}`);
+            deletedRecords.push(record);
+            console.log(`[cloudflare-tunnel] ✅ Deleted orphaned DNS record: ${record.name} (${record.comment})`);
+          } catch (error) {
+            console.error(`[cloudflare-tunnel] ❌ Failed to delete DNS record ${record.name}: ${(error as Error).message}`);
+          }
+        }
+      } else if (orphanedRecords.length > 0) {
+        console.log(`[cloudflare-tunnel] 🔍 Found ${orphanedRecords.length} orphaned DNS records (dry run - not deleted)`);
+        orphanedRecords.forEach(record => {
+          console.log(`[cloudflare-tunnel] - ${record.name} (${record.type}) - ${record.comment}`);
+        });
+      }
+
+      return {
+        found: orphanedRecords,
+        deleted: deletedRecords
+      };
+    } catch (error) {
+      console.error(`[cloudflare-tunnel] ❌ DNS cleanup failed: ${(error as Error).message}`);
+      return { found: [], deleted: [] };
+    }
+  };
 
   const cf = async <T>(
     apiToken: string,
@@ -547,6 +719,38 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         }
         if (!zoneId) throw new Error(`Zone ${apexDomain} not found in account ${accountId}`);
 
+        // 2.5. Cleanup orphaned resources if configured
+        const {
+          autoCleanup = true,
+          dryRun = true,
+          preserveTunnels = []
+        } = cleanupConfig;
+        
+        if (autoCleanup) {
+          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup (${dryRun ? 'dry run' : 'live'})...`);
+          
+          // List active tunnel names to preserve
+          const activeTunnelNames = [tunnelName, ...preserveTunnels];
+          
+          // Cleanup DNS records
+          const dnsCleanup = await cleanupOrphanedDnsRecords(apiToken, zoneId, activeTunnelNames, dryRun);
+          if (dnsCleanup.found.length > 0) {
+            console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} orphaned, ${dnsCleanup.deleted.length} deleted`);
+          }
+          
+          // Check for orphaned SSL certificates
+          const orphanedSslCerts = await findOrphanedSslCertificates(apiToken, zoneId, activeTunnelNames);
+          if (orphanedSslCerts.length > 0) {
+            console.log(`[cloudflare-tunnel] 🔍 Found ${orphanedSslCerts.length} orphaned SSL certificates created by this plugin:`);
+            orphanedSslCerts.forEach(cert => {
+              const hosts = cert.hostnames || cert.hosts || [];
+              const tagHost = hosts.find((h: string) => h.startsWith('cf-tunnel-plugin-'));
+              console.log(`[cloudflare-tunnel] - Certificate ${cert.id} (${tagHost}): ${hosts.filter((h: string) => !h.startsWith('cf-tunnel-plugin-')).join(', ')}`);
+            });
+            console.log(`[cloudflare-tunnel] ℹ️  SSL certificates require manual review before deletion`);
+          }
+        }
+
         // 3. Get or create the tunnel
         const tunnels = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
         let tunnel = tunnels[0];
@@ -574,9 +778,24 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         });
 
         // 5. DNS management
+        
+        // Helper to generate consistent metadata comment for DNS records
+        const generateDnsComment = (recordType: string) => {
+          const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+          return `cloudflare-tunnel-vite-plugin:${tunnelName}:${recordType}:${timestamp}`;
+        };
+
+        // Helper to generate a special "tag" hostname for SSL certificates
+        // Since SSL certs don't support metadata, we add a special hostname as a tag
+        const generateSslTagHostname = () => {
+          const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD format
+          const safeTunnelName = tunnelName.replace(/[^a-zA-Z0-9]/g, ''); // Remove special chars
+          return `cf-tunnel-plugin-${safeTunnelName}-${timestamp}.${parentDomain}`;
+        };
+        
         if (dnsOption) {
-          // Ensure wildcard A & AAAA records exist
-          const ensureDnsRecord = async (type: "A" | "AAAA", content: string) => {
+          // Ensure wildcard CNAME record exists
+          const ensureDnsRecord = async (type: "CNAME", content: string) => {
             const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=${type}&name=${encodeURIComponent(dnsOption)}`, undefined, z.array(DNSRecordSchema));
             if (existingWildcard.length === 0) {
               console.log(`[cloudflare-tunnel] Creating ${type} record for ${dnsOption}...`);
@@ -585,25 +804,32 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                 name: dnsOption,
                 content,
                 proxied: true,
+                comment: generateDnsComment(`wildcard-${type.toLowerCase()}`),
               }, DNSRecordSchema);
             }
           };
 
-          await ensureDnsRecord("A", "192.0.2.1");
-          await ensureDnsRecord("AAAA", "100::");
+          await ensureDnsRecord("CNAME", `${tunnelId}.cfargotunnel.com`);
         } else {
-          // Fallback: Ensure CNAME for specific hostname
-          const existingDnsRecords = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname}`, undefined, z.array(DNSRecordSchema));
-          const existing = existingDnsRecords.length > 0;
+          const wildcardDns = `*.${parentDomain}`;
+          // check if there is an existing wildcard dns record for the parent domain
+          const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${wildcardDns}`, undefined, z.array(DNSRecordSchema));
+          if (existingWildcard.length === 0) {
 
-          if (!existing) {
-            console.log(`[cloudflare-tunnel] Creating DNS record for ${hostname}...`);
-            await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
-              type: "CNAME",
-              name: hostname,
-              content: `${tunnelId}.cfargotunnel.com`,
-              proxied: true,
-            }, DNSRecordSchema);
+            // Fallback: Ensure CNAME for specific hostname
+            const existingDnsRecords = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname}`, undefined, z.array(DNSRecordSchema));
+            const existing = existingDnsRecords.length > 0;
+
+            if (!existing) {
+              console.log(`[cloudflare-tunnel] Creating DNS record for ${hostname}...`);
+              await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
+                type: "CNAME",
+                name: hostname,
+                content: `${tunnelId}.cfargotunnel.com`,
+                proxied: true,
+                comment: generateDnsComment('cname'),
+              }, DNSRecordSchema);
+            }
           }
         }
 
@@ -625,9 +851,13 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
             
             if (!matchingCert) {
               console.log(`[cloudflare-tunnel] Requesting ${isWildcard ? 'wildcard ' : ''}certificate for ${certNeededHost}...`);
-              await retryWithBackoff(() =>
+              const tagHostname = generateSslTagHostname();
+              const certificateHosts = [certNeededHost, tagHostname];
+              debugLog(`Adding tag hostname to certificate: ${tagHostname}`);
+              
+              const newCert: any = await retryWithBackoff(() =>
                 cf(apiToken, "POST", `/zones/${zoneId}/ssl/certificate_packs/order`, {
-                  hosts: [certNeededHost],
+                  hosts: certificateHosts,
                   "certificate_authority": "lets_encrypt",
                   "type": "advanced",
                   "validation_method": "txt",
@@ -635,6 +865,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                   cloudflare_branding: false
                 })
               );
+              
+              // Track the newly created certificate
+              if (newCert && newCert.id) {
+                trackSslCertificate(newCert.id, certificateHosts, tunnelName);
+              }
             } else {
               debugLog("← Edge certificate already exists", matchingCert);
             }
@@ -648,9 +883,13 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
               const existingHostnameCert = certContainingHost(hostname);
               if (totalTls.status !== "on" && !existingHostnameCert) {
                 console.log(`[cloudflare-tunnel] Requesting edge certificate for ${hostname}...`);
-                await retryWithBackoff(() =>
+                const tagHostname = generateSslTagHostname();
+                const certificateHosts = [hostname, tagHostname];
+                debugLog(`Adding tag hostname to certificate: ${tagHostname}`);
+                
+                const newCert: any = await retryWithBackoff(() =>
                   cf(apiToken, "POST", `/zones/${zoneId}/ssl/certificate_packs/order`, {
-                    hosts: [hostname],
+                    hosts: certificateHosts,
                     "certificate_authority": "lets_encrypt",
                     "type": "advanced",
                     "validation_method": "txt",
@@ -658,6 +897,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                     cloudflare_branding: false
                   })
                 );
+                
+                // Track the newly created certificate
+                if (newCert && newCert.id) {
+                  trackSslCertificate(newCert.id, certificateHosts, tunnelName);
+                }
               } else {
                 debugLog("← Edge certificate already exists", existingHostnameCert);
               }

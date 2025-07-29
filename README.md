@@ -145,7 +145,14 @@ cloudflareTunnel({
   accountId: 'your-account-id',
   
   // Optional: Cloudflare zone ID (auto-detected if omitted) 
-  zoneId: 'your-zone-id'
+  zoneId: 'your-zone-id',
+  
+  // Optional: Resource cleanup configuration
+  cleanup: {
+    autoCleanup: true,                 // Clean up orphaned resources on startup
+    dryRun: false,                     // Set to false to actually delete resources  
+    preserveTunnels: ['prod-tunnel']   // Additional tunnel names to preserve
+  }
 })
 ```
 
@@ -164,6 +171,75 @@ cloudflareTunnel({
 | `logLevel` | `'debug' \| 'info' \| 'warn' \| 'error' \| 'fatal'` | `undefined` | Logging level for cloudflared |
 | `accountId` | `string` | Auto-detected | Cloudflare account ID (optional) |
 | `zoneId` | `string` | Auto-detected | Cloudflare zone ID (optional) |
+| `cleanup` | `object` | `{}` | Resource cleanup configuration (see below) |
+
+### Cleanup Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `autoCleanup` | `boolean` | `true` | Automatically clean up orphaned resources on startup |
+| `dryRun` | `boolean` | `true` | If true, only list orphaned resources without deleting them |
+| `preserveTunnels` | `string[]` | `[]` | Additional tunnel names to preserve during cleanup |
+
+## 🧹 Resource Management & Cleanup
+
+The plugin automatically tags resources it creates and can clean up orphaned resources from previous runs or crashes.
+
+### Automatic Resource Tagging
+
+**DNS Records:** All DNS records created by the plugin include a comment field with metadata:
+- Format: `cloudflare-tunnel-vite-plugin:tunnelName:recordType:date`
+- Example: `cloudflare-tunnel-vite-plugin:vite-tunnel:cname:2025-01-27`
+
+**SSL Certificates:** Since Cloudflare doesn't support metadata fields, the plugin adds a special "tag" hostname to certificates for identification:
+- Format: `cf-tunnel-plugin-{tunnelName}-{date}.{parentDomain}`
+- Example: `cf-tunnel-plugin-vitetunnel-20250127.api.example.com` (for hostname `dev.api.example.com`)
+
+### Cleanup Configuration
+
+```typescript
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  cleanup: {
+    // autoCleanup: true,                 // Enabled by default
+    dryRun: false,                        // Actually delete resources (default: true)
+    preserveTunnels: ['prod-tunnel']      // Don't delete resources from these tunnels
+  }
+})
+
+// To disable auto cleanup:
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  cleanup: {
+    autoCleanup: false                    // Disable automatic cleanup
+  }
+})
+```
+
+### How Cleanup Works
+
+1. **DNS Records:** The plugin searches for DNS records with comments matching `cloudflare-tunnel-vite-plugin:*`
+2. **SSL Certificates:** The plugin searches for certificates containing tag hostnames like `cf-tunnel-plugin-{tunnelName}-*`
+3. **Identifies Orphans:** Resources belonging to tunnel names not in the current or preserved list
+4. **Safe Cleanup:** DNS records are deleted automatically, SSL certificates require manual review
+
+### Manual Cleanup
+
+If you need to manually clean up resources:
+
+1. **List orphaned DNS records:**
+   ```bash
+   # Using Cloudflare API
+   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/dns_records?comment=cloudflare-tunnel-vite-plugin&match=all" \
+     -H "Authorization: Bearer YOUR_API_TOKEN"
+   ```
+
+2. **Review SSL certificates:**
+   ```bash
+   # List all certificate packs
+   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/ssl/certificate_packs" \
+     -H "Authorization: Bearer YOUR_API_TOKEN"
+   ```
 
 ## 🌐 DNS & SSL Configuration
 
