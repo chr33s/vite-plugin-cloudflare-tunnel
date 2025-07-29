@@ -1,6 +1,6 @@
 # Cloudflare Tunnel Vite Plugin
 
-A powerful Vite plugin that automatically creates and manages Cloudflare tunnels for local development. Expose your local dev server to the internet instantly with HTTPS, no port forwarding or complex setup required.
+A powerful Vite plugin that automatically creates and manages Cloudflare tunnels for local development. Expose your local dev server to the internet instantly with HTTPS, no port forwarding or complex setup required. Works seamlessly on Windows, macOS, and Linux.
 
 [![npm version](https://badge.fury.io/js/cloudflare-tunnel-vite-plugin.svg)](https://badge.fury.io/js/cloudflare-tunnel-vite-plugin)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -13,6 +13,7 @@ A powerful Vite plugin that automatically creates and manages Cloudflare tunnels
 - 🎯 **Smart DNS Management** - Automatically creates and manages DNS records
 - 🔄 **Hot Reload Support** - Works seamlessly with Vite's development features
 - 📝 **Comprehensive Logging** - Debug tunnel issues with configurable log levels
+- 🖥️ **Cross-Platform** - Works on Windows, macOS, and Linux
 - 🛡️ **Type Safe** - Full TypeScript support with proper type definitions
 
 ## 🚀 Quick Start
@@ -46,14 +47,10 @@ export default defineConfig({
 The plugin will automatically find your API token using this priority order:
 1. `apiToken` option in your config
 2. `CLOUDFLARE_API_KEY` environment variable
-3. Wrangler config file (`~/.wrangler/config/default.toml`)
 
 ```bash
-# Option 1: Environment variable
+# Environment variable
 export CLOUDFLARE_API_KEY="your-api-token-here"
-
-# Option 2: If you use Wrangler, the plugin will automatically 
-# find your token from ~/.wrangler/config/default.toml
 ```
 
 3. **Start development:**
@@ -94,48 +91,9 @@ That's it! Your local server is now accessible at `https://dev.yourdomain.com` �
    # Option 1: Environment variable
    export CLOUDFLARE_API_KEY="your-token-here"
    
-   # Option 2: If you use Wrangler, add it to ~/.wrangler/config/default.toml:
-   # api_token = "your-token-here"
-   
-   # Option 3: Pass directly in your vite.config.ts:
+   # Option 2: Pass directly in your vite.config.ts:
    # cloudflareTunnel({ apiToken: "your-token-here", hostname: "dev.example.com" })
    ```
-
-## 🔧 Wrangler Integration
-
-If you're already using [Wrangler](https://developers.cloudflare.com/workers/wrangler/) for Cloudflare Workers development, this plugin will automatically detect and use your existing API token from your Wrangler configuration file.
-
-### Automatic Token Detection
-
-The plugin checks for your API token in this order:
-1. **Direct configuration** - `apiToken` option in `cloudflareTunnel()`
-2. **Environment variable** - `CLOUDFLARE_API_KEY`  
-3. **Wrangler config** - `~/.wrangler/config/default.toml`
-
-### Wrangler Config Example
-
-```toml
-# ~/.wrangler/config/default.toml
-name = "my-worker"
-main = "src/index.js"
-compatibility_date = "2023-05-18"
-
-# Your API token - the plugin will automatically find this
-api_token = "your-cloudflare-api-token-here"
-
-[env.production]
-name = "my-worker-production"
-
-[env.staging]  
-name = "my-worker-staging"
-```
-
-### Benefits of Wrangler Integration
-
-- **Zero Configuration** - No need to set environment variables if you already use Wrangler
-- **Consistent Tokens** - Use the same API token across all your Cloudflare tools
-- **Cross-Platform** - Works on Windows, macOS, and Linux
-- **Automatic Discovery** - Finds your token without any additional setup
 
 ## 📦 Import Styles
 
@@ -274,7 +232,6 @@ npm run dev
 **"API token invalid"**  
 - Check your token has all required permissions
 - Ensure the token isn't expired
-- If using Wrangler integration, verify your `~/.wrangler/config/default.toml` contains a valid `api_token`
 
 **"Tunnel connection failed"**
 - Check your internet connection
@@ -307,9 +264,6 @@ cloudflareTunnel({
 
 - **API Token Security** - Never commit API tokens to version control
 - **Environment Variables** - Store tokens in `.env` files (add to `.gitignore`)
-- **Wrangler Config** - Your `~/.wrangler/config/default.toml` should also be kept secure and not committed
-- **Token Permissions** - Use minimal required permissions for your API token
-- **Tunnel Access** - Remember that your tunnel URL will be publicly accessible
 
 ## 🤝 Contributing
 

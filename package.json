@@ -58,7 +58,6 @@
   "dependencies": {
     "cloudflared": "^0.7.0",
     "dotenv": "^16.4.5",
-    "execa": "^8.0.0",
     "zod": "^4.0.11"
   },
   "engines": {

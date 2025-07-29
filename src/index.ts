@@ -13,11 +13,11 @@
 import type { Plugin } from "vite";
 import { bin, install } from "cloudflared";
 import fs from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { spawn, exec } from "node:child_process";
 import { z } from "zod";
 import { config } from "dotenv";
-import path from "node:path";
-import { homedir } from "node:os";
+// import path from "node:path";
+// import { homedir } from "node:os";
 
 // Zod schemas for Cloudflare API responses
 const CloudflareErrorSchema = z.object({
@@ -68,45 +68,6 @@ export type Tunnel = z.infer<typeof TunnelSchema>;
 export type DNSRecord = z.infer<typeof DNSRecordSchema>;
 
 /**
- * Extract Cloudflare API token from Wrangler config file
- * Cross-platform equivalent to: grep -E '(_token|api_key)' ~/.wrangler/config/default.toml
- * 
- * @returns Promise<string | null> - The extracted token or null if not found
- */
-async function extractWranglerToken(): Promise<string | null> {
-  try {
-    // Standard Wrangler config path: ~/.wrangler/config/default.toml
-    const wranglerConfigPath = path.join(homedir(), '.wrangler', 'config', 'default.toml');
-    
-    // Check if file exists
-    await fs.access(wranglerConfigPath);
-    
-    // Read the config file
-    const configContent = await fs.readFile(wranglerConfigPath, 'utf-8');
-    
-    // Extract tokens using regex patterns that match the original grep command
-    // Look for patterns like: api_token = "..." or _token = "..."
-    const tokenPatterns = [
-      /api_token\s*=\s*["']([^"']+)["']/i,
-      /_token\s*=\s*["']([^"']+)["']/i,
-      /api_key\s*=\s*["']([^"']+)["']/i,
-    ];
-    
-    for (const pattern of tokenPatterns) {
-      const match = configContent.match(pattern);
-      if (match && match[1]) {
-        return match[1];
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    // File not found or other errors - return null to indicate no token found
-    return null;
-  }
-}
-
-/**
  * Configuration options for the Cloudflare Tunnel Vite plugin
  */
 export interface CloudflareTunnelOptions {
@@ -119,7 +80,6 @@ export interface CloudflareTunnelOptions {
    * Fallback priority:
    * 1. Provided apiToken option
    * 2. CLOUDFLARE_API_KEY environment variable
-   * 3. Wrangler config file (~/.wrangler/config/default.toml)
    */
   apiToken?: string;
   
@@ -282,17 +242,26 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   // Cleanup function to ensure cloudflared is always terminated
   const killCloudflared = (signal: NodeJS.Signals = 'SIGTERM') => {
     if (!child || child.killed) return;
-    
+
     try {
       console.log(`[cloudflare-tunnel] 🛑 Terminating cloudflared process (PID: ${child.pid}) with ${signal}...`);
-      child.kill(signal);
-      
+      const killed = child.kill(signal);
+
+      // On Windows some signals (e.g. SIGTERM) may be no-ops for non-Node processes. Fallback to taskkill if needed.
+      if (!killed && process.platform === 'win32') {
+        exec(`taskkill /pid ${child.pid} /T /F`, () => {});
+      }
+
       // Force kill after timeout if graceful termination fails
       if (signal === 'SIGTERM') {
         setTimeout(() => {
           if (child && !child.killed) {
             console.log('[cloudflare-tunnel] 🛑 Force killing cloudflared process...');
-            child.kill('SIGKILL');
+            if (process.platform === 'win32') {
+              exec(`taskkill /pid ${child.pid} /T /F`, () => {});
+            } else {
+              child.kill('SIGKILL');
+            }
           }
         }, 2000);
       }
@@ -319,8 +288,14 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     ['SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGHUP'].forEach(signal => {
       process.once(signal as NodeJS.Signals, () => {
         killCloudflared(signal as NodeJS.Signals);
-        // Re-emit the signal to allow normal process termination
-        process.kill(process.pid, signal as NodeJS.Signals);
+
+        // Re-emit the signal if the current platform supports it, otherwise exit gracefully.
+        try {
+          process.kill(process.pid, signal as NodeJS.Signals);
+        } catch {
+          // Unsupported signal on this platform (e.g. Windows)
+          process.exit(0);
+        }
       });
     });
     
@@ -364,28 +339,13 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
       try {
         // Resolve API token with fallback priority:
         // 1. Provided apiToken option
-        // 2. CLOUDFLARE_API_KEY environment variable  
-        // 3. Wrangler config file
-        let apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
-        
-        if (!apiToken) {
-          // Try to extract from Wrangler config as fallback
-          try {
-            const wranglerToken = await extractWranglerToken();
-            if (wranglerToken) {
-              apiToken = wranglerToken;
-              console.log('[cloudflare-tunnel] 🔑 Using API token from Wrangler config');
-            }
-          } catch (error) {
-            // Wrangler extraction failed, continue to error below
-          }
-        }
-        
+        // 2. CLOUDFLARE_API_KEY environment variable
+        const apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
+
         if (!apiToken) {
           throw new Error(
             "[cloudflare-tunnel] API token is required. " +
-            "Provide it via 'apiToken' option, set CLOUDFLARE_API_KEY environment variable, " +
-            "or ensure it's configured in your Wrangler config (~/.wrangler/config/default.toml). " +
+            "Provide it via 'apiToken' option or set the CLOUDFLARE_API_KEY environment variable. " +
             "Get your token at: https://dash.cloudflare.com/profile/api-tokens"
           );
         }
@@ -470,11 +430,14 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         child = spawn(
           bin,
           cloudflaredArgs,
-          { 
+          {
             stdio: ["ignore", "pipe", "pipe"],
             // Keep child in same process group (default behavior)
-            // This ensures it gets killed if the entire process group is terminated
-            detached: false
+            detached: false,
+            // Prevent an extra console window on Windows and ensure compatibility
+            windowsHide: true,
+            // Use the system shell on Windows to properly locate .exe if needed
+            shell: process.platform === 'win32',
           }
         );
         console.log(`[cloudflare-tunnel] Process spawned with PID: ${child.pid}`);
