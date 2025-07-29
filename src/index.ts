@@ -16,6 +16,8 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import { config } from "dotenv";
+import path from "node:path";
+import { homedir } from "node:os";
 
 // Zod schemas for Cloudflare API responses
 const CloudflareErrorSchema = z.object({
@@ -66,6 +68,45 @@ export type Tunnel = z.infer<typeof TunnelSchema>;
 export type DNSRecord = z.infer<typeof DNSRecordSchema>;
 
 /**
+ * Extract Cloudflare API token from Wrangler config file
+ * Cross-platform equivalent to: grep -E '(_token|api_key)' ~/.wrangler/config/default.toml
+ * 
+ * @returns Promise<string | null> - The extracted token or null if not found
+ */
+async function extractWranglerToken(): Promise<string | null> {
+  try {
+    // Standard Wrangler config path: ~/.wrangler/config/default.toml
+    const wranglerConfigPath = path.join(homedir(), '.wrangler', 'config', 'default.toml');
+    
+    // Check if file exists
+    await fs.access(wranglerConfigPath);
+    
+    // Read the config file
+    const configContent = await fs.readFile(wranglerConfigPath, 'utf-8');
+    
+    // Extract tokens using regex patterns that match the original grep command
+    // Look for patterns like: api_token = "..." or _token = "..."
+    const tokenPatterns = [
+      /api_token\s*=\s*["']([^"']+)["']/i,
+      /_token\s*=\s*["']([^"']+)["']/i,
+      /api_key\s*=\s*["']([^"']+)["']/i,
+    ];
+    
+    for (const pattern of tokenPatterns) {
+      const match = configContent.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    // File not found or other errors - return null to indicate no token found
+    return null;
+  }
+}
+
+/**
  * Configuration options for the Cloudflare Tunnel Vite plugin
  */
 export interface CloudflareTunnelOptions {
@@ -74,7 +115,11 @@ export interface CloudflareTunnelOptions {
    * - Zone:Zone:Read
    * - Zone:DNS:Edit
    * - Account:Cloudflare Tunnel:Edit
-   * Can also be set via CLOUDFLARE_API_KEY environment variable
+   * 
+   * Fallback priority:
+   * 1. Provided apiToken option
+   * 2. CLOUDFLARE_API_KEY environment variable
+   * 3. Wrangler config file (~/.wrangler/config/default.toml)
    */
   apiToken?: string;
   
@@ -173,21 +218,13 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     throw new Error("[cloudflare-tunnel] logLevel must be one of: debug, info, warn, error, fatal");
   }
 
-  // Use provided apiToken or fallback to environment variable
-  const apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
-  
-  if (!apiToken) {
-    throw new Error(
-      "[cloudflare-tunnel] API token is required. " +
-      "Provide it via 'apiToken' option or set CLOUDFLARE_API_KEY environment variable. " +
-      "Get your token at: https://dash.cloudflare.com/profile/api-tokens"
-    );
-  }
+  // We'll resolve the API token in configureServer since it needs to be async
 
   /**
    * Helper function to make authenticated Cloudflare API requests with validation
    */
   const cf = async <T>(
+    apiToken: string,
     method: string, 
     url: string, 
     body?: unknown, 
@@ -266,6 +303,34 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
 
     async configureServer(server) {
       try {
+        // Resolve API token with fallback priority:
+        // 1. Provided apiToken option
+        // 2. CLOUDFLARE_API_KEY environment variable  
+        // 3. Wrangler config file
+        let apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
+        
+        if (!apiToken) {
+          // Try to extract from Wrangler config as fallback
+          try {
+            const wranglerToken = await extractWranglerToken();
+            if (wranglerToken) {
+              apiToken = wranglerToken;
+              console.log('[cloudflare-tunnel] 🔑 Using API token from Wrangler config');
+            }
+          } catch (error) {
+            // Wrangler extraction failed, continue to error below
+          }
+        }
+        
+        if (!apiToken) {
+          throw new Error(
+            "[cloudflare-tunnel] API token is required. " +
+            "Provide it via 'apiToken' option, set CLOUDFLARE_API_KEY environment variable, " +
+            "or ensure it's configured in your Wrangler config (~/.wrangler/config/default.toml). " +
+            "Get your token at: https://dash.cloudflare.com/profile/api-tokens"
+          );
+        }
+
         // Determine the port to use: user-provided or Vite's configured port
         const port = userProvidedPort || server.config.server.port || 5173;
         console.log(`[cloudflare-tunnel] Using port ${port}${userProvidedPort ? ' (user-provided)' : ' (from Vite config)'}`);
@@ -279,22 +344,22 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         }
 
         // 2. Figure out account & zone
-        const accounts = await cf("GET", "/accounts", undefined, z.array(AccountSchema));
+        const accounts = await cf(apiToken, "GET", "/accounts", undefined, z.array(AccountSchema));
         const accountId = forcedAccount || accounts[0]?.id;
         if (!accountId) throw new Error("Unable to determine Cloudflare account ID");
 
         const apex = hostname.split(".").slice(-2).join(".");
-        const zones = await cf("GET", `/zones?name=${apex}`, undefined, z.array(ZoneSchema));
+        const zones = await cf(apiToken, "GET", `/zones?name=${apex}`, undefined, z.array(ZoneSchema));
         const zoneId = forcedZone || zones[0]?.id;
         if (!zoneId) throw new Error(`Zone ${apex} not found in account ${accountId}`);
 
         // 3. Get or create the tunnel
-        const tunnels = await cf("GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
+        const tunnels = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
         let tunnel = tunnels[0];
 
         if (!tunnel) {
           console.log(`[cloudflare-tunnel] Creating tunnel '${tunnelName}'...`);
-          tunnel = await cf("POST", `/accounts/${accountId}/cfd_tunnel`, {
+          tunnel = await cf(apiToken, "POST", `/accounts/${accountId}/cfd_tunnel`, {
             name: tunnelName,
             config_src: "cloudflare",
           }, TunnelSchema);
@@ -302,7 +367,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         const tunnelId = tunnel.id as string;
 
         // 4. Push ingress rules (public hostname → localhost)
-        await cf("PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+        await cf(apiToken, "PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
           config: {
             ingress: [
               { hostname, service: `http://localhost:${port}` },
@@ -312,12 +377,12 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         });
 
         // 5. Ensure CNAME exists in DNS
-        const existingDnsRecords = await cf("GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname}`, undefined, z.array(DNSRecordSchema));
+        const existingDnsRecords = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname}`, undefined, z.array(DNSRecordSchema));
         const existing = existingDnsRecords.length > 0;
 
         if (!existing) {
           console.log(`[cloudflare-tunnel] Creating DNS record for ${hostname}...`);
-          await cf("POST", `/zones/${zoneId}/dns_records`, {
+          await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
             type: "CNAME",
             name: hostname,
             content: `${tunnelId}.cfargotunnel.com`,
@@ -326,7 +391,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         }
 
         // 6. Grab the tunnel token (single JWT string)
-        const token = await cf("GET", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`, undefined, z.string());
+        const token = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`, undefined, z.string());
 
         // 7. Fire up cloudflared
         const cloudflaredArgs = ["tunnel"];
