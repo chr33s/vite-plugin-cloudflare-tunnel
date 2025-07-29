@@ -164,12 +164,6 @@ export interface CloudflareTunnelOptions {
     autoCleanup?: boolean;
     
     /**
-     * Whether to perform a dry run (list orphaned resources without deleting)
-     * @default true
-     */
-    dryRun?: boolean;
-    
-    /**
      * Array of tunnel names to preserve during cleanup (in addition to current tunnel)
      * @default []
      */
@@ -347,7 +341,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         
         // Look for our tag hostname pattern with current tunnel name
         return certHosts.some((host: string) => 
-          host.startsWith(`cf-tunnel-plugin-${currentTunnelName}-`) && host.includes('.')
+          host.startsWith(`cf-tunnel-plugin-${currentTunnelName}.`)
         );
       });
       
@@ -391,27 +385,25 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
    * @param currentTunnelName Current tunnel name
    * @param currentHostname Current hostname configuration
    * @param tunnelId Current tunnel ID for CNAME content
-   * @param dryRun If true, only list what would be deleted without actually deleting
    */
   const cleanupMismatchedDnsRecords = async (
     apiToken: string,
     zoneId: string,
-    currentTunnelName: string,
+    dnsComment: string,
     currentHostname: string,
-    tunnelId: string,
-    dryRun: boolean = true
+    tunnelId: string
   ): Promise<{ found: DNSRecord[], deleted: DNSRecord[] }> => {
     try {
       // Find DNS records created by our plugin for the current tunnel
       const pluginDnsRecords = await cf(
         apiToken,
         "GET",
-        `/zones/${zoneId}/dns_records?comment=cloudflare-tunnel-vite-plugin:${currentTunnelName}&match=all`,
+        `/zones/${zoneId}/dns_records?comment=${dnsComment}&match=all`,
         undefined,
         z.array(DNSRecordSchema)
       );
 
-      debugLog(`Found ${pluginDnsRecords.length} DNS records for current tunnel: ${currentTunnelName}`);
+      debugLog(`Found ${pluginDnsRecords.length} DNS records for current tunnel: ${dnsComment}`);
 
       // Identify mismatched records (don't match current configuration)
       const expectedCnameContent = `${tunnelId}.cfargotunnel.com`;
@@ -438,8 +430,8 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
 
       const deletedRecords: DNSRecord[] = [];
       
-      if (!dryRun && mismatchedRecords.length > 0) {
-        console.log(`[cloudflare-tunnel] 🧹 Cleaning up ${mismatchedRecords.length} mismatched DNS records from tunnel '${currentTunnelName}'...`);
+      if (mismatchedRecords.length > 0) {
+        console.log(`[cloudflare-tunnel] 🧹 Cleaning up ${mismatchedRecords.length} mismatched DNS records from tunnel '${dnsComment}'...`);
         
         for (const record of mismatchedRecords) {
           try {
@@ -450,11 +442,6 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
             console.error(`[cloudflare-tunnel] ❌ Failed to delete DNS record ${record.name}: ${(error as Error).message}`);
           }
         }
-      } else if (mismatchedRecords.length > 0) {
-        console.log(`[cloudflare-tunnel] 🔍 Found ${mismatchedRecords.length} mismatched DNS records for tunnel '${currentTunnelName}' (dry run - not deleted)`);
-        mismatchedRecords.forEach(record => {
-          console.log(`[cloudflare-tunnel] - ${record.name} → ${record.content} (expected: ${expectedCnameContent})`);
-        });
       }
 
       return {
@@ -660,6 +647,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     },
 
     async configureServer(server) {
+      // Helper to generate consistent metadata comment for DNS records
+      const generateDnsComment = () => {
+        return `cloudflare-tunnel-vite-plugin:${tunnelName}`;
+      };
+
       try {
         
         // ------------------------------------------------------------
@@ -748,8 +740,6 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         // Extract cleanup configuration for later use
         const {
           autoCleanup = true,
-          dryRun = true,
-          preserveTunnels = []
         } = cleanupConfig;
 
         // 3. Get or create the tunnel
@@ -767,10 +757,10 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
 
         // 3.5. Cleanup mismatched resources from current tunnel if configured
         if (autoCleanup) {
-          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup for tunnel '${tunnelName}' (${dryRun ? 'dry run' : 'live'})...`);
+          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup for tunnel '${tunnelName}'...`);
           
           // Cleanup DNS records that don't match current configuration
-          const dnsCleanup = await cleanupMismatchedDnsRecords(apiToken, zoneId, tunnelName, hostname, tunnelId, dryRun);
+          const dnsCleanup = await cleanupMismatchedDnsRecords(apiToken, zoneId, generateDnsComment(), hostname, tunnelId);
           if (dnsCleanup.found.length > 0) {
             console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} mismatched, ${dnsCleanup.deleted.length} deleted`);
           }
@@ -778,13 +768,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
           // Check for mismatched SSL certificates
           const mismatchedSslCerts = await findMismatchedSslCertificates(apiToken, zoneId, tunnelName, hostname);
           if (mismatchedSslCerts.length > 0) {
-            console.log(`[cloudflare-tunnel] 🔍 Found ${mismatchedSslCerts.length} mismatched SSL certificates for tunnel '${tunnelName}':`);
-            mismatchedSslCerts.forEach((cert: any) => {
-              const hosts = cert.hostnames || cert.hosts || [];
-              const tagHost = hosts.find((h: string) => h.startsWith('cf-tunnel-plugin-'));
-              console.log(`[cloudflare-tunnel] - Certificate ${cert.id} (${tagHost}): ${hosts.filter((h: string) => !h.startsWith('cf-tunnel-plugin-')).join(', ')}`);
-            });
-            console.log(`[cloudflare-tunnel] ℹ️  SSL certificates require manual review before deletion`);
+            // Delete the mismatched SSL certificates
+            for (const cert of mismatchedSslCerts) {
+              await cf(apiToken, "DELETE", `/zones/${zoneId}/ssl/certificate_packs/${cert.id}`);
+            }
+            console.log(`[cloudflare-tunnel] 📊 SSL cleanup: ${mismatchedSslCerts.length} deleted`);
           }
         } else {
           debugLog("← Cleanup skipped", cleanupConfig);
@@ -804,18 +792,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         });
 
         // 5. DNS management
-        
-        // Helper to generate consistent metadata comment for DNS records
-        const generateDnsComment = (recordType: string) => {
-          const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-          return `cloudflare-tunnel-vite-plugin:${tunnelName}:${recordType}:${timestamp}`;
-        };
 
         // Helper to generate a special "tag" hostname for SSL certificates
         // Since SSL certs don't support metadata, we add a special hostname as a tag
         const generateSslTagHostname = () => {
-          const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD format
-          return `cf-tunnel-plugin-${tunnelName}-${timestamp}.${parentDomain}`;
+          return `cf-tunnel-plugin-${tunnelName}.${parentDomain}`;
         };
         
         if (dnsOption) {
@@ -829,7 +810,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                 name: dnsOption,
                 content,
                 proxied: true,
-                comment: generateDnsComment(`wildcard-${type.toLowerCase()}`),
+                comment: generateDnsComment(),
               }, DNSRecordSchema);
             }
           };
@@ -852,7 +833,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                 name: hostname,
                 content: `${tunnelId}.cfargotunnel.com`,
                 proxied: true,
-                comment: generateDnsComment('cname'),
+                comment: generateDnsComment(),
               }, DNSRecordSchema);
             }
           }
@@ -885,7 +866,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                   hosts: certificateHosts,
                   "certificate_authority": "lets_encrypt",
                   "type": "advanced",
-                  "validation_method": "txt",
+                  "validation_method": isWildcard ? "txt" : "http",
                   "validity_days": 90,
                   cloudflare_branding: false
                 })
@@ -948,11 +929,11 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
           cloudflaredArgs.push("--logfile", logFile);
         }
         
+
+        // Log *then* add the token so token is not logged
+        debugLog("Spawning cloudflared", bin, cloudflaredArgs);
         // Add the run subcommand and token
         cloudflaredArgs.push("run", "--token", token);
-
-        debugLog("Spawning cloudflared", bin, cloudflaredArgs);
-        console.log(`[cloudflare-tunnel] Spawning: ${bin} ${cloudflaredArgs.join(' ')}`);
         child = spawn(
           bin,
           cloudflaredArgs,

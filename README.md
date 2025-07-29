@@ -150,7 +150,6 @@ cloudflareTunnel({
   // Optional: Resource cleanup configuration
   cleanup: {
     autoCleanup: true,                 // Clean up mismatched resources on startup
-    dryRun: false                      // Actually delete resources (default: false)
   }
 })
 ```
@@ -177,8 +176,7 @@ cloudflareTunnel({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `autoCleanup` | `boolean` | `true` | Automatically clean up mismatched resources from current tunnel on startup |
-| `dryRun` | `boolean` | `false` | If true, only list mismatched resources without deleting them |
-| `preserveTunnels` | `string[]` | `[]` | **(Deprecated)** No longer used - cleanup only affects current tunnel |
+
 
 ## 🧹 Resource Management & Cleanup
 
@@ -201,15 +199,6 @@ cloudflareTunnel({
   hostname: 'dev.example.com',
   cleanup: {
     // autoCleanup: true,                 // Enabled by default
-    // dryRun: false                      // Actually delete resources (default)
-  }
-})
-
-// To enable dry run mode:
-cloudflareTunnel({
-  hostname: 'dev.example.com',
-  cleanup: {
-    dryRun: true                          // Only list mismatched resources, don't delete
   }
 })
 
@@ -461,40 +450,3 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
    git clone https://github.com/eastlondoner/cloudflare-tunnel-vite-plugin.git
    cd cloudflare-tunnel-vite-plugin
    ```
-
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-3. **Build the plugin:**
-   ```bash
-   npm run build
-   ```
-
-4. **Run tests:**
-   ```bash
-   npm test
-   ```
-
-### Scripts
-
-- `npm run build` - Build the plugin
-- `npm run dev` - Build in watch mode
-- `npm run typecheck` - Type checking
-- `npm run lint` - Lint code
-- `npm run lint:fix` - Fix linting issues
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Cloudflare](https://cloudflare.com) for their amazing tunnel technology
-- [Vite](https://vitejs.dev) for the excellent plugin architecture
-- The open source community for inspiration and feedback
-
----
-
-**Questions?** Open an issue or start a discussion. We're here to help! 💙 

@@ -4,9 +4,11 @@ import { cloudflareTunnel } from 'cloudflare-tunnel-vite-plugin';
 export default defineConfig({
   plugins: [
     cloudflareTunnel({
-      hostname: 'foo5.wildcard2.gptkids.app',
-      ssl: '*.wildcard2.gptkids.app',
-      debug: true
+      // tunnelName: 'my-tunnel',
+      hostname: 'foo2.nowildcard.gptkids.app',
+      // ssl: '*.wildcard.gptkids.app',
+      // dns: '*.wildcard.gptkids.app',
+      debug: false
     }) as Plugin
   ],
   server: {
