@@ -234,7 +234,18 @@ cloudflareTunnel({
 5. **Tunnel Creation** - Creates or reuses a Cloudflare tunnel
 6. **DNS Configuration** - Sets up CNAME record pointing to the tunnel
 7. **Connection Establishment** - Starts `cloudflared` daemon with secure token
-8. **Ready!** - Your local server is now publicly accessible via HTTPS
+8. **Process Management** - Registers cleanup handlers to ensure `cloudflared` is terminated when the parent process exits
+9. **Ready!** - Your local server is now publicly accessible via HTTPS
+
+### Process Cleanup
+
+The plugin includes robust process management to prevent orphaned `cloudflared` processes:
+
+- **Signal Handlers** - Listens for `SIGINT`, `SIGTERM`, `SIGQUIT`, and `SIGHUP` signals
+- **Process Group Management** - Spawns `cloudflared` in the same process group for automatic cleanup
+- **Exception Handling** - Cleans up on uncaught exceptions and unhandled rejections
+- **Graceful Termination** - Attempts `SIGTERM` first, falls back to `SIGKILL` after timeout
+- **Multiple Exit Points** - Handles Vite server shutdown, build completion, and process termination
 
 ## 📁 Examples
 
@@ -273,6 +284,12 @@ npm run dev
 **TypeScript errors**
 - Make sure the plugin is built: `npm run build`
 - Check your `tsconfig.json` includes the plugin types
+
+**Orphaned `cloudflared` processes**
+- The plugin includes comprehensive cleanup handlers for all exit scenarios
+- If you still see orphaned processes, they may be from previous versions or crashes
+- Kill them manually: `pkill -f cloudflared` or `ps aux | grep cloudflared`
+- Check if your process manager (PM2, Docker, etc.) is sending `SIGKILL` instead of `SIGTERM`
 
 ### Debug Mode
 

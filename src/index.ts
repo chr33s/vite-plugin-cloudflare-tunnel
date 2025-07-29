@@ -279,6 +279,65 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
 
   let child: ReturnType<typeof spawn> | undefined;
 
+  // Cleanup function to ensure cloudflared is always terminated
+  const killCloudflared = (signal: NodeJS.Signals = 'SIGTERM') => {
+    if (!child || child.killed) return;
+    
+    try {
+      console.log(`[cloudflare-tunnel] 🛑 Terminating cloudflared process (PID: ${child.pid}) with ${signal}...`);
+      child.kill(signal);
+      
+      // Force kill after timeout if graceful termination fails
+      if (signal === 'SIGTERM') {
+        setTimeout(() => {
+          if (child && !child.killed) {
+            console.log('[cloudflare-tunnel] 🛑 Force killing cloudflared process...');
+            child.kill('SIGKILL');
+          }
+        }, 2000);
+      }
+    } catch (error) {
+      // Process might already be dead, ignore errors
+      console.log(`[cloudflare-tunnel] Note: Error killing cloudflared: ${error}`);
+    }
+  };
+
+  // Track if exit handlers are already registered to prevent duplicates
+  let exitHandlersRegistered = false;
+  
+  const registerExitHandler = () => {
+    if (exitHandlersRegistered) return;
+    exitHandlersRegistered = true;
+    
+    const cleanup = () => killCloudflared('SIGTERM');
+    
+    // Handle graceful shutdowns
+    process.once('exit', cleanup);
+    process.once('beforeExit', cleanup);
+    
+    // Handle signals that can terminate the process
+    ['SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGHUP'].forEach(signal => {
+      process.once(signal as NodeJS.Signals, () => {
+        killCloudflared(signal as NodeJS.Signals);
+        // Re-emit the signal to allow normal process termination
+        process.kill(process.pid, signal as NodeJS.Signals);
+      });
+    });
+    
+    // Handle uncaught exceptions and unhandled rejections
+    process.once('uncaughtException', (error) => {
+      console.error('[cloudflare-tunnel] Uncaught exception, cleaning up cloudflared...');
+      killCloudflared('SIGTERM');
+      throw error; // Re-throw to maintain normal error handling
+    });
+    
+    process.once('unhandledRejection', (reason) => {
+      console.error('[cloudflare-tunnel] Unhandled rejection, cleaning up cloudflared...');
+      killCloudflared('SIGTERM');
+      throw reason; // Re-throw to maintain normal error handling
+    });
+  };
+
   return {
     name: "vite-plugin-cloudflare-tunnel",
 
@@ -411,9 +470,17 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         child = spawn(
           bin,
           cloudflaredArgs,
-          { stdio: ["ignore", "pipe", "pipe"] }
+          { 
+            stdio: ["ignore", "pipe", "pipe"],
+            // Keep child in same process group (default behavior)
+            // This ensures it gets killed if the entire process group is terminated
+            detached: false
+          }
         );
         console.log(`[cloudflare-tunnel] Process spawned with PID: ${child.pid}`);
+        
+        // Register cleanup handlers now that we have a child process
+        registerExitHandler();
 
         // Wait for tunnel to establish connection
         let tunnelReady = false;
@@ -478,14 +545,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
 
         // Stop the tunnel when Vite shuts down
         server.httpServer?.once("close", () => {
-          if (child && !child.killed) {
-            child.kill("SIGTERM");
-            setTimeout(() => {
-              if (child && !child.killed) {
-                child.kill("SIGKILL");
-              }
-            }, 5000);
-          }
+          killCloudflared('SIGTERM');
         });
 
       } catch (error: any) {
@@ -506,16 +566,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     },
 
     closeBundle() {
-      if (child && !child.killed) {
-        console.log('[cloudflare-tunnel] 🛑 Shutting down tunnel...');
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (child && !child.killed) {
-            console.log('[cloudflare-tunnel] 🛑 Force killing tunnel process...');
-            child.kill("SIGKILL");
-          }
-        }, 1000);
-      }
+      killCloudflared('SIGTERM');
     },
   };
 }
