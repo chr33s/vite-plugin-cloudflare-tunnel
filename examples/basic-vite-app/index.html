@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cloudflare Tunnel Vite Plugin - Basic Example</title>
+  </head>
+  <body>
+    <div id="app">
+      <h1>🌐 Cloudflare Tunnel Vite Plugin</h1>
+      <p>This is a basic Vite app demonstrating the cloudflare-tunnel-vite-plugin.</p>
+      
+      <div class="card">
+        <h2>Features</h2>
+        <ul>
+          <li>✅ Automatic Cloudflare tunnel creation</li>
+          <li>✅ DNS record management</li>
+          <li>✅ HTTPS certificate via Cloudflare</li>
+          <li>✅ Environment variable support</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Status</h2>
+        <p id="status">Checking tunnel status...</p>
+        <button id="refresh" type="button">Refresh Status</button>
+      </div>
+
+      <div class="card">
+        <h2>Development Info</h2>
+        <p><strong>Local:</strong> <span id="local-url">http://localhost:5173</span></p>
+        <p><strong>Tunnel:</strong> <span id="tunnel-url">Check console for tunnel URL</span></p>
+      </div>
+    </div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
