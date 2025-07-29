@@ -128,6 +128,15 @@ cloudflareTunnel({
   // Optional: Tunnel name (default: "vite-tunnel")
   tunnelName: 'my-dev-tunnel',
   
+  // Optional: Custom DNS configuration
+  dns: '*.example.com',              // Wildcard or exact hostname match
+  
+  // Optional: Custom SSL certificate configuration  
+  ssl: '*.example.com',              // Wildcard or exact hostname match
+  
+  // Optional: Enable debug logging
+  debug: true,                       // Extra verbose logging for troubleshooting
+  
   // Optional: Logging configuration
   logFile: './cloudflared.log',      // Path to write logs to a file
   logLevel: 'debug',                 // Log level: debug, info, warn, error, fatal
@@ -148,10 +157,89 @@ cloudflareTunnel({
 | `apiToken` | `string` | `process.env.CLOUDFLARE_API_KEY` | Cloudflare API token with tunnel permissions |
 | `port` | `number` | `5173` | Local port your dev server runs on |
 | `tunnelName` | `string` | `"vite-tunnel"` | Name for the tunnel in your Cloudflare dashboard |
+| `dns` | `string` | `undefined` | Custom DNS record (wildcard like `*.example.com` or exact hostname match) |
+| `ssl` | `string` | `undefined` | Custom SSL certificate (wildcard like `*.example.com` or exact hostname match) |
+| `debug` | `boolean` | `false` | Enable extra debug logging for troubleshooting |
 | `logFile` | `string` | `undefined` | Path to write cloudflared logs to a file |
 | `logLevel` | `'debug' \| 'info' \| 'warn' \| 'error' \| 'fatal'` | `undefined` | Logging level for cloudflared |
 | `accountId` | `string` | Auto-detected | Cloudflare account ID (optional) |
 | `zoneId` | `string` | Auto-detected | Cloudflare zone ID (optional) |
+
+## 🌐 DNS & SSL Configuration
+
+The plugin provides advanced DNS and SSL management options for custom setups:
+
+### DNS Configuration
+
+Use the `dns` option to control DNS record creation:
+
+```typescript
+// Wildcard DNS - creates A and AAAA records for *.example.com
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  dns: '*.example.com'  // Creates wildcard DNS records
+})
+
+// Exact hostname DNS - must match the hostname exactly
+cloudflareTunnel({
+  hostname: 'dev.example.com', 
+  dns: 'dev.example.com'  // Creates specific DNS record
+})
+```
+
+**Wildcard DNS (`*.example.com`):**
+- Creates both A and AAAA records for the wildcard domain
+- Allows any subdomain to resolve through Cloudflare
+- Useful for multi-environment setups
+
+**Exact hostname DNS:**
+- Must exactly match the `hostname` option
+- Creates a CNAME record pointing to the tunnel
+- Default behavior when `dns` option is omitted
+
+### SSL Certificate Configuration
+
+Use the `ssl` option to control SSL certificate provisioning:
+
+```typescript
+// Wildcard SSL - requests *.example.com certificate
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  ssl: '*.example.com'  // Requests wildcard certificate
+})
+
+// Exact hostname SSL - must match the hostname exactly  
+cloudflareTunnel({
+  hostname: 'dev.example.com',
+  ssl: 'dev.example.com'  // Requests specific certificate
+})
+```
+
+**Wildcard SSL (`*.example.com`):**
+- Requests a wildcard edge certificate from Let's Encrypt
+- Covers all subdomains under the domain
+- Useful for development environments with multiple subdomains
+
+**Exact hostname SSL:**
+- Must exactly match the `hostname` option
+- Requests a certificate for the specific hostname only
+
+**Automatic SSL (default behavior):**
+When no `ssl` option is provided, the plugin:
+1. Checks for existing wildcard certificate covering the domain
+2. If no wildcard exists, checks if Total TLS is enabled
+3. If neither exists, requests a regular certificate for the hostname
+
+### Combined DNS & SSL Example
+
+```typescript
+cloudflareTunnel({
+  hostname: 'api.dev.example.com',
+  dns: '*.dev.example.com',      // Wildcard DNS for dev subdomains
+  ssl: '*.dev.example.com',      // Wildcard SSL for dev subdomains
+  debug: true                    // Enable debug logging
+})
+```
 
 ## 📝 Logging & Debugging
 
@@ -255,10 +343,16 @@ Enable verbose logging to diagnose issues:
 ```typescript
 cloudflareTunnel({
   hostname: 'dev.example.com',
-  logLevel: 'debug',
-  logFile: './debug.log'
+  debug: true,                    // Enable extra debug logging
+  logLevel: 'debug',              // Set cloudflared log level  
+  logFile: './debug.log'          // Write logs to file
 })
 ```
+
+**Debug Options:**
+- `debug: true` - Enables extra plugin debug logging with `[cloudflare-tunnel:debug]` prefix
+- `logLevel: 'debug'` - Sets the cloudflared process log level to debug
+- `logFile` - Writes all cloudflared logs to a file for analysis
 
 ## 🔒 Security Considerations
 
