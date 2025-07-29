@@ -149,9 +149,8 @@ cloudflareTunnel({
   
   // Optional: Resource cleanup configuration
   cleanup: {
-    autoCleanup: true,                 // Clean up orphaned resources on startup
-    dryRun: false,                     // Set to false to actually delete resources  
-    preserveTunnels: ['prod-tunnel']   // Additional tunnel names to preserve
+    autoCleanup: true,                 // Clean up mismatched resources on startup
+    dryRun: false                      // Set to false to actually delete resources  
   }
 })
 ```
@@ -163,7 +162,7 @@ cloudflareTunnel({
 | `hostname` | `string` | **Required** | The public hostname you want (e.g., `dev.example.com`) |
 | `apiToken` | `string` | `process.env.CLOUDFLARE_API_KEY` | Cloudflare API token with tunnel permissions |
 | `port` | `number` | `5173` | Local port your dev server runs on |
-| `tunnelName` | `string` | `"vite-tunnel"` | Name for the tunnel in your Cloudflare dashboard |
+| `tunnelName` | `string` | `"vite-tunnel"` | Name for the tunnel in your Cloudflare dashboard (letters, numbers, hyphens only) |
 | `dns` | `string` | `undefined` | Custom DNS record (wildcard like `*.example.com` or exact hostname match) |
 | `ssl` | `string` | `undefined` | Custom SSL certificate (wildcard like `*.example.com` or exact hostname match) |
 | `debug` | `boolean` | `false` | Enable extra debug logging for troubleshooting |
@@ -177,9 +176,9 @@ cloudflareTunnel({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `autoCleanup` | `boolean` | `true` | Automatically clean up orphaned resources on startup |
-| `dryRun` | `boolean` | `true` | If true, only list orphaned resources without deleting them |
-| `preserveTunnels` | `string[]` | `[]` | Additional tunnel names to preserve during cleanup |
+| `autoCleanup` | `boolean` | `true` | Automatically clean up mismatched resources from current tunnel on startup |
+| `dryRun` | `boolean` | `true` | If true, only list mismatched resources without deleting them |
+| `preserveTunnels` | `string[]` | `[]` | **(Deprecated)** No longer used - cleanup only affects current tunnel |
 
 ## 🧹 Resource Management & Cleanup
 
@@ -202,8 +201,7 @@ cloudflareTunnel({
   hostname: 'dev.example.com',
   cleanup: {
     // autoCleanup: true,                 // Enabled by default
-    dryRun: false,                        // Actually delete resources (default: true)
-    preserveTunnels: ['prod-tunnel']      // Don't delete resources from these tunnels
+    dryRun: false                         // Actually delete resources (default: true)
   }
 })
 
@@ -218,10 +216,12 @@ cloudflareTunnel({
 
 ### How Cleanup Works
 
-1. **DNS Records:** The plugin searches for DNS records with comments matching `cloudflare-tunnel-vite-plugin:*`
-2. **SSL Certificates:** The plugin searches for certificates containing tag hostnames like `cf-tunnel-plugin-{tunnelName}-*`
-3. **Identifies Orphans:** Resources belonging to tunnel names not in the current or preserved list
-4. **Safe Cleanup:** DNS records are deleted automatically, SSL certificates require manual review
+1. **Current Tunnel Only:** The plugin only cleans up resources created by the **current tunnel name**
+2. **Configuration Mismatch Detection:** 
+   - **DNS Records:** Finds records from current tunnel that don't match current hostname/target
+   - **SSL Certificates:** Finds certificates from current tunnel that don't cover current hostname
+3. **Safe Cleanup:** DNS records are deleted automatically, SSL certificates require manual review
+4. **Preserves Other Tunnels:** Resources from different tunnel names are never touched
 
 ### Manual Cleanup
 
@@ -401,6 +401,11 @@ npm run dev
 - Check your internet connection
 - Verify firewall isn't blocking the connection
 - Try enabling debug logging: `logLevel: 'debug'`
+
+**"tunnelName must contain only letters, numbers, and hyphens"**
+- Tunnel names must be DNS-safe for use in comments and SSL certificate hostnames
+- Valid: `my-tunnel`, `dev`, `tunnel123`
+- Invalid: `my_tunnel`, `tunnel-`, `-tunnel`, `my.tunnel`
 
 **TypeScript errors**
 - Make sure the plugin is built: `npm run build`

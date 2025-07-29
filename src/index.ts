@@ -114,6 +114,7 @@ export interface CloudflareTunnelOptions {
   
   /** 
    * Name for the tunnel in your Cloudflare dashboard
+   * Must contain only letters, numbers, and hyphens. Cannot start or end with a hyphen.
    * @default "vite-tunnel"
    */
   tunnelName?: string;
@@ -259,6 +260,14 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     throw new Error("[cloudflare-tunnel] hostname is required and must be a valid string");
   }
 
+  // Validate tunnel name contains only DNS-safe characters
+  if (tunnelName && !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(tunnelName)) {
+    throw new Error(
+      "[cloudflare-tunnel] tunnelName must contain only letters, numbers, and hyphens. " +
+      "It cannot start or end with a hyphen. This ensures compatibility with DNS records and SSL certificates."
+    );
+  }
+
   if (
     userProvidedPort &&
     (typeof userProvidedPort !== "number" || userProvidedPort < 1 || userProvidedPort > 65535)
@@ -320,51 +329,55 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   };
 
   /**
-   * Find orphaned SSL certificates created by this plugin using tag hostnames
+   * Find mismatched SSL certificates from the current tunnel that don't cover current hostname
    */
-  const findOrphanedSslCertificates = async (
+  const findMismatchedSslCertificates = async (
     apiToken: string,
     zoneId: string,
-    activeTunnelNames: string[] = []
+    currentTunnelName: string,
+    currentHostname: string
   ): Promise<any[]> => {
     try {
       const certPacks: any = await cf(apiToken, "GET", `/zones/${zoneId}/ssl/certificate_packs?status=all`, undefined, z.any());
       const allCerts: any[] = Array.isArray(certPacks) ? certPacks : (certPacks.result || []);
       
-      // Find certificates created by our plugin (containing tag hostnames)
-      const pluginCerts = allCerts.filter(cert => {
+      // Find certificates created by our plugin for the current tunnel
+      const currentTunnelCerts = allCerts.filter(cert => {
         const certHosts = cert.hostnames || cert.hosts || [];
         
-        // Look for our tag hostname pattern: cf-tunnel-plugin-{tunnelName}-{date}.{domain}
+        // Look for our tag hostname pattern with current tunnel name
         return certHosts.some((host: string) => 
-          host.startsWith('cf-tunnel-plugin-') && host.includes('.')
+          host.startsWith(`cf-tunnel-plugin-${currentTunnelName}-`) && host.includes('.')
         );
       });
       
-      debugLog(`Found ${pluginCerts.length} SSL certificates created by plugin`);
+      debugLog(`Found ${currentTunnelCerts.length} SSL certificates for current tunnel: ${currentTunnelName}`);
       
-      // From plugin certificates, find orphaned ones (not from active tunnels)
-      const orphanedCerts = pluginCerts.filter(cert => {
+      // From current tunnel certificates, find ones that don't cover current hostname
+      const mismatchedCerts = currentTunnelCerts.filter(cert => {
         const certHosts = cert.hostnames || cert.hosts || [];
         
-        // Extract tunnel name from tag hostname
-        const tagHost = certHosts.find((host: string) => host.startsWith('cf-tunnel-plugin-'));
-        if (!tagHost) return false;
+        // Check if certificate covers current hostname
+        const coversCurrentHostname = certHosts.some((host: string) => {
+          // Skip tag hostnames when checking coverage
+          if (host.startsWith('cf-tunnel-plugin-')) return false;
+          
+          // Check exact match or wildcard match
+          return host === currentHostname || 
+                 (host.startsWith('*.') && currentHostname.endsWith(host.slice(1)));
+        });
         
-        // Parse: cf-tunnel-plugin-{tunnelName}-{date}.{domain}
-        const match = tagHost.match(/^cf-tunnel-plugin-([^-]+)-\d+\./);
-        if (!match) return false;
-        
-        const certTunnelName = match[1];
-        return !activeTunnelNames.includes(certTunnelName);
+        // If certificate doesn't cover current hostname, it's mismatched
+        return !coversCurrentHostname;
       });
       
-      debugLog(`Found ${orphanedCerts.length} orphaned SSL certificates`, orphanedCerts.map(c => ({ 
+      debugLog(`Found ${mismatchedCerts.length} mismatched SSL certificates`, mismatchedCerts.map(c => ({ 
         id: c.id, 
-        hosts: c.hostnames || c.hosts 
+        hosts: c.hostnames || c.hosts,
+        currentHostname 
       })));
       
-      return orphanedCerts;
+      return mismatchedCerts;
     } catch (error) {
       console.error(`[cloudflare-tunnel] ❌ SSL certificate listing failed: ${(error as Error).message}`);
       return [];
@@ -372,67 +385,80 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   };
 
   /**
-   * Cleanup orphaned DNS records created by this plugin
+   * Cleanup mismatched DNS records from the current tunnel that don't match current configuration
    * @param apiToken Cloudflare API token
    * @param zoneId Zone ID to clean up
-   * @param activeTunnelNames Array of currently active tunnel names to preserve
+   * @param currentTunnelName Current tunnel name
+   * @param currentHostname Current hostname configuration
+   * @param tunnelId Current tunnel ID for CNAME content
    * @param dryRun If true, only list what would be deleted without actually deleting
    */
-  const cleanupOrphanedDnsRecords = async (
+  const cleanupMismatchedDnsRecords = async (
     apiToken: string,
     zoneId: string,
-    activeTunnelNames: string[] = [],
+    currentTunnelName: string,
+    currentHostname: string,
+    tunnelId: string,
     dryRun: boolean = true
   ): Promise<{ found: DNSRecord[], deleted: DNSRecord[] }> => {
     try {
-      // Find all DNS records created by our plugin
+      // Find DNS records created by our plugin for the current tunnel
       const pluginDnsRecords = await cf(
         apiToken,
         "GET",
-        `/zones/${zoneId}/dns_records?comment=cloudflare-tunnel-vite-plugin&match=all`,
+        `/zones/${zoneId}/dns_records?comment=cloudflare-tunnel-vite-plugin:${currentTunnelName}&match=all`,
         undefined,
         z.array(DNSRecordSchema)
       );
 
-      debugLog(`Found ${pluginDnsRecords.length} DNS records created by plugin`);
+      debugLog(`Found ${pluginDnsRecords.length} DNS records for current tunnel: ${currentTunnelName}`);
 
-      // Identify orphaned records (not in active tunnel names)
-      const orphanedRecords = pluginDnsRecords.filter(record => {
-        if (!record.comment) return false;
+      // Identify mismatched records (don't match current configuration)
+      const expectedCnameContent = `${tunnelId}.cfargotunnel.com`;
+      const mismatchedRecords = pluginDnsRecords.filter(record => {
+        // Skip records that match current configuration
+        if (record.name === currentHostname && record.content === expectedCnameContent) {
+          return false; // This record matches current config, keep it
+        }
         
-        // Parse comment format: cloudflare-tunnel-vite-plugin:tunnelName:recordType:date
-        const commentParts = record.comment.split(':');
-        if (commentParts.length < 2) return false;
+        // Check if this is a wildcard DNS record that's still valid
+        if (dnsOption && record.name === dnsOption && record.content === expectedCnameContent) {
+          return false; // This wildcard record matches current config, keep it
+        }
         
-        const tunnelName = commentParts[1];
-        return !activeTunnelNames.includes(tunnelName);
+        return true; // This record doesn't match current config, mark for cleanup
       });
 
-      debugLog(`Found ${orphanedRecords.length} orphaned DNS records`, orphanedRecords.map(r => ({ name: r.name, comment: r.comment })));
+      debugLog(`Found ${mismatchedRecords.length} mismatched DNS records`, mismatchedRecords.map(r => ({ 
+        name: r.name, 
+        content: r.content,
+        expected: expectedCnameContent,
+        comment: r.comment 
+      })));
 
       const deletedRecords: DNSRecord[] = [];
       
-      if (!dryRun && orphanedRecords.length > 0) {
-        console.log(`[cloudflare-tunnel] 🧹 Cleaning up ${orphanedRecords.length} orphaned DNS records...`);
+      if (!dryRun && mismatchedRecords.length > 0) {
+        console.log(`[cloudflare-tunnel] 🧹 Cleaning up ${mismatchedRecords.length} mismatched DNS records from tunnel '${currentTunnelName}'...`);
         
-        for (const record of orphanedRecords) {
+        for (const record of mismatchedRecords) {
           try {
             await cf(apiToken, "DELETE", `/zones/${zoneId}/dns_records/${record.id}`);
             deletedRecords.push(record);
-            console.log(`[cloudflare-tunnel] ✅ Deleted orphaned DNS record: ${record.name} (${record.comment})`);
+            console.log(`[cloudflare-tunnel] ✅ Deleted mismatched DNS record: ${record.name} → ${record.content}`);
           } catch (error) {
             console.error(`[cloudflare-tunnel] ❌ Failed to delete DNS record ${record.name}: ${(error as Error).message}`);
           }
         }
-      } else if (orphanedRecords.length > 0) {
-        console.log(`[cloudflare-tunnel] 🔍 Found ${orphanedRecords.length} orphaned DNS records (dry run - not deleted)`);
-        orphanedRecords.forEach(record => {
-          console.log(`[cloudflare-tunnel] - ${record.name} (${record.type}) - ${record.comment}`);
+      } else if (mismatchedRecords.length > 0) {
+        console.log(`[cloudflare-tunnel] 🔍 Found ${mismatchedRecords.length} mismatched DNS records for tunnel '${currentTunnelName}' (dry run - not deleted)`);
+        mismatchedRecords.forEach(record => {
+          console.log(`[cloudflare-tunnel] - ${record.name} → ${record.content} (expected: ${expectedCnameContent})`);
         });
       }
 
       return {
-        found: orphanedRecords,
+        found: mismatchedRecords,
         deleted: deletedRecords
       };
     } catch (error) {
@@ -719,37 +745,12 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         }
         if (!zoneId) throw new Error(`Zone ${apexDomain} not found in account ${accountId}`);
 
-        // 2.5. Cleanup orphaned resources if configured
+        // Extract cleanup configuration for later use
         const {
           autoCleanup = true,
           dryRun = true,
           preserveTunnels = []
         } = cleanupConfig;
-        
-        if (autoCleanup) {
-          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup (${dryRun ? 'dry run' : 'live'})...`);
-          
-          // List active tunnel names to preserve
-          const activeTunnelNames = [tunnelName, ...preserveTunnels];
-          
-          // Cleanup DNS records
-          const dnsCleanup = await cleanupOrphanedDnsRecords(apiToken, zoneId, activeTunnelNames, dryRun);
-          if (dnsCleanup.found.length > 0) {
-            console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} orphaned, ${dnsCleanup.deleted.length} deleted`);
-          }
-          
-          // Check for orphaned SSL certificates
-          const orphanedSslCerts = await findOrphanedSslCertificates(apiToken, zoneId, activeTunnelNames);
-          if (orphanedSslCerts.length > 0) {
-            console.log(`[cloudflare-tunnel] 🔍 Found ${orphanedSslCerts.length} orphaned SSL certificates created by this plugin:`);
-            orphanedSslCerts.forEach(cert => {
-              const hosts = cert.hostnames || cert.hosts || [];
-              const tagHost = hosts.find((h: string) => h.startsWith('cf-tunnel-plugin-'));
-              console.log(`[cloudflare-tunnel] - Certificate ${cert.id} (${tagHost}): ${hosts.filter((h: string) => !h.startsWith('cf-tunnel-plugin-')).join(', ')}`);
-            });
-            console.log(`[cloudflare-tunnel] ℹ️  SSL certificates require manual review before deletion`);
-          }
-        }
 
         // 3. Get or create the tunnel
         const tunnels = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
@@ -763,6 +764,31 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
           }, TunnelSchema);
         }
         const tunnelId = tunnel.id as string;
+
+        // 3.5. Cleanup mismatched resources from current tunnel if configured
+        if (autoCleanup) {
+          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup for tunnel '${tunnelName}' (${dryRun ? 'dry run' : 'live'})...`);
+          
+          // Cleanup DNS records that don't match current configuration
+          const dnsCleanup = await cleanupMismatchedDnsRecords(apiToken, zoneId, tunnelName, hostname, tunnelId, dryRun);
+          if (dnsCleanup.found.length > 0) {
+            console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} mismatched, ${dnsCleanup.deleted.length} deleted`);
+          }
+          
+          // Check for mismatched SSL certificates
+          const mismatchedSslCerts = await findMismatchedSslCertificates(apiToken, zoneId, tunnelName, hostname);
+          if (mismatchedSslCerts.length > 0) {
+            console.log(`[cloudflare-tunnel] 🔍 Found ${mismatchedSslCerts.length} mismatched SSL certificates for tunnel '${tunnelName}':`);
+            mismatchedSslCerts.forEach((cert: any) => {
+              const hosts = cert.hostnames || cert.hosts || [];
+              const tagHost = hosts.find((h: string) => h.startsWith('cf-tunnel-plugin-'));
+              console.log(`[cloudflare-tunnel] - Certificate ${cert.id} (${tagHost}): ${hosts.filter((h: string) => !h.startsWith('cf-tunnel-plugin-')).join(', ')}`);
+            });
+            console.log(`[cloudflare-tunnel] ℹ️  SSL certificates require manual review before deletion`);
+          }
+        } else {
+          debugLog("← Cleanup skipped", cleanupConfig);
+        }
 
         const isIpv6 = serverHost.includes(':');
         const localTarget = `http://${isIpv6 ? `[${serverHost}]` : serverHost}:${port}`;
@@ -789,8 +815,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         // Since SSL certs don't support metadata, we add a special hostname as a tag
         const generateSslTagHostname = () => {
           const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD format
-          const safeTunnelName = tunnelName.replace(/[^a-zA-Z0-9]/g, ''); // Remove special chars
-          return `cf-tunnel-plugin-${safeTunnelName}-${timestamp}.${parentDomain}`;
+          return `cf-tunnel-plugin-${tunnelName}-${timestamp}.${parentDomain}`;
         };
         
         if (dnsOption) {
