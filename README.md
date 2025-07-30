@@ -163,6 +163,40 @@ shareButton.onclick = () => {
 - ⚡ **Dev Only** - Virtual module is only available during development
 - 🎯 **TypeScript Ready** - Full type support with proper imports
 
+### TypeScript Setup
+
+To use the virtual module with TypeScript, you need to reference the provided type definitions:
+
+**Option 1: Add to your `tsconfig.json` (Recommended)**
+```json
+{
+  "compilerOptions": {
+    // ... your other options
+    "types": [
+      "vite/client",
+      "vite-plugin-cloudflare-tunnel/virtual"
+    ]
+  }
+}
+```
+
+**Option 2: Triple-slash directive in your TypeScript files**
+```typescript
+/// <reference types="vite-plugin-cloudflare-tunnel/virtual" />
+
+import { getTunnelUrl } from 'virtual:vite-plugin-cloudflare-tunnel';
+```
+
+**Option 3: Manual type declaration**
+If you prefer to declare the types yourself, create a `types/virtual-modules.d.ts` file:
+```typescript
+declare module 'virtual:vite-plugin-cloudflare-tunnel' {
+  export function getTunnelUrl(): string;
+}
+```
+
+The virtual module function is fully typed and includes JSDoc documentation for better IDE support.
+
 ## 🔀 Two Tunnel Modes
 
 The plugin supports two distinct modes:

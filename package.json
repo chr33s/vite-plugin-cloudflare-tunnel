@@ -11,16 +11,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./virtual": {
+      "types": "./dist-types/virtual.d.ts"
     }
   },
   "files": [
     "README.md",
     "LICENSE",
-    "dist"
+    "dist",
+    "dist-types"
   ],
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "npm run dist-types && tsup",
+    "dev": "npm run dist-types && tsup --watch",
+    "dist-types": "mkdir -p dist-types && cp src/virtual.d.ts dist-types/virtual.d.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "lint:fix": "eslint src --ext .ts,.tsx --fix",

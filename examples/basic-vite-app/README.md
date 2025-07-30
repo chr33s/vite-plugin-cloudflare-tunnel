@@ -9,6 +9,8 @@ This example demonstrates how to use the `vite-plugin-cloudflare-tunnel` with a 
 - ✅ HTTPS certificate via Cloudflare
 - ✅ Environment variable configuration
 - ✅ Basic tunnel status detection
+- ✅ Virtual module TypeScript integration
+- ✅ Runtime tunnel URL access
 
 ## Setup
 
@@ -68,6 +70,39 @@ vite v5.2.0 ready in 300 ms
 🌐 Cloudflare tunnel started for https://dev.your-domain.com
 ```
 
+## Virtual Module Usage
+
+This example demonstrates how to access the tunnel URL at runtime using the virtual module:
+
+```typescript
+import { getTunnelUrl } from 'virtual:vite-plugin-cloudflare-tunnel';
+
+// Get the current tunnel URL
+const tunnelUrl = getTunnelUrl();
+console.log('Public tunnel URL:', tunnelUrl);
+
+// Use it in your app
+const copyButton = document.getElementById('copy-url');
+copyButton.onclick = () => {
+  navigator.clipboard.writeText(getTunnelUrl());
+  alert('Tunnel URL copied to clipboard!');
+};
+```
+
+### TypeScript Setup
+
+The `tsconfig.json` includes the virtual module types:
+
+```json
+{
+  "compilerOptions": {
+    "types": ["vite/client", "vite-plugin-cloudflare-tunnel/virtual"]
+  }
+}
+```
+
+This provides full TypeScript support with IDE autocompletion and type checking for the virtual module.
+
 ## Configuration Options
 
 The plugin supports several configuration options in `vite.config.ts`:
@@ -110,9 +145,10 @@ cloudflareTunnel({
 ```
 basic-vite-app/
 ├── index.html          # Main HTML file
-├── main.js             # JavaScript entry point
+├── main.ts             # TypeScript entry point with virtual module usage
 ├── style.css           # Styles
 ├── vite.config.ts      # Vite configuration with plugin
+├── tsconfig.json       # TypeScript configuration with virtual module types
 ├── package.json        # Dependencies
 ├── .env.example        # Environment variables template
 └── README.md           # This file

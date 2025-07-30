@@ -235,12 +235,13 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
   // ---------------------------------------------------------------------
 
   const GLOBAL_STATE = Symbol.for("vite-plugin-cloudflare-tunnel.state");
-
+  
   type GlobalState = {
     child?: ReturnType<typeof spawn>;
     exitHandlersRegistered?: boolean;
     configHash?: string;
     shuttingDown?: boolean;
+    tunnelUrl: Promise<string> | undefined;
     // Allow dynamic keys for SSL certificate tracking
     [key: string]: any;
   };
@@ -267,7 +268,6 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
 
   // Determine tunnel mode and validate options
   const isQuickMode = !('hostname' in options);
-  console.log("isQuickMode", options);
   
   // Validate that quick mode options don't include named-mode-only options
   if (isQuickMode) {
@@ -725,6 +725,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
 
     // Set shutdown flag to silence logs unless debug is enabled
     globalState.shuttingDown = true;
+    globalState.tunnelUrl = undefined;
 
     try {
       console.log(`[cloudflare-tunnel] 🛑 Terminating cloudflared process (PID: ${child.pid}) with ${signal}...`);
@@ -1348,6 +1349,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
     configureServer(server) {
       // start the tunnel process but don't block on it in the pre hook
       const configuredPromise = configureServer(server);
+      globalState.tunnelUrl = configuredPromise.then(() => tunnelUrl).catch(() => "");
       return async () => {
         // now in the post hook, wait for the tunnel process to start
         await configuredPromise;
@@ -1361,7 +1363,8 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
       return;
     },
 
-    load(id) {
+    async load(id) {
+      const tunnelUrl = await globalState.tunnelUrl;
       if (id === '\0' + VIRTUAL_MODULE_ID) {
         return `export function getTunnelUrl() { return ${JSON.stringify(tunnelUrl)}; }`;
       }
