@@ -1308,16 +1308,18 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
     config(config) {
       // Load environment variables from .env files
       dotEnvConfig();
-      
-      // Skip hostname configuration for quick mode
-      if (isQuickMode) {
-        debugLog("Quick mode - skipping hostname configuration");
-        return;
-      }
+  
       
       // Automatically configure Vite to allow tunnel hostname for named mode
       if (!config.server) {
         config.server = {};
+      }
+      
+      // Skip hostname configuration for quick mode
+      if (isQuickMode) {
+        config.server.allowedHosts = [".trycloudflare.com"];
+        
+        return;
       }
       
       // Allow requests from the tunnel hostname for development
