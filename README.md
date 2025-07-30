@@ -2,12 +2,13 @@
 
 A powerful Vite plugin that automatically creates and manages Cloudflare tunnels for local development. Expose your local dev server to the internet instantly with HTTPS, no port forwarding or complex setup required. Works seamlessly on Windows, macOS, and Linux.
 
-[![npm version](https://badge.fury.io/js/cloudflare-tunnel-vite-plugin.svg)](https://badge.fury.io/js/cloudflare-tunnel-vite-plugin)
+[![npm version](https://badge.fury.io/js/vite-plugin-cloudflare-tunnel.svg)](https://badge.fury.io/js/vite-plugin-cloudflare-tunnel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## ✨ Features
 
 - 🚀 **Zero Configuration** - Works out of the box with minimal setup
+- ⚡ **Quick Tunnel Mode** - Instant public URLs without API tokens or custom domains
 - 🔒 **Automatic HTTPS** - Secure connections via Cloudflare's SSL certificates  
 - 🌐 **Public Access** - Share your local dev server with anyone, anywhere
 - 🎯 **Smart DNS Management** - Automatically creates and manages DNS records
@@ -21,32 +22,51 @@ A powerful Vite plugin that automatically creates and manages Cloudflare tunnels
 ### Installation
 
 ```bash
-npm install cloudflare-tunnel-vite-plugin --save-dev
+npm install vite-plugin-cloudflare-tunnel --save-dev
 ```
 
-### Basic Usage
+### Quick Tunnel Mode (Recommended for Getting Started)
+
+The fastest way to get a public URL for your local dev server:
+
+```typescript
+import { defineConfig } from 'vite';
+import cloudflareTunnel from 'vite-plugin-cloudflare-tunnel';
+
+export default defineConfig({
+  plugins: [
+    cloudflareTunnel() // No configuration needed!
+  ]
+});
+```
+
+```bash
+npm run dev
+```
+
+That's it! You'll get a random `https://xyz.trycloudflare.com` URL instantly - no API token or setup required! 🎉
+
+### Named Tunnel Mode (For Custom Domains)
+
+For persistent URLs with your own domain:
 
 1. **Add to your `vite.config.ts`:**
 
 ```typescript
 import { defineConfig } from 'vite';
-import cloudflareTunnel from 'cloudflare-tunnel-vite-plugin';
-// Or use named import: import { cloudflareTunnel } from 'cloudflare-tunnel-vite-plugin';
+import cloudflareTunnel from 'vite-plugin-cloudflare-tunnel';
 
 export default defineConfig({
   plugins: [
     cloudflareTunnel({
       hostname: 'dev.yourdomain.com', // Your desired public URL
+      tunnelName: 'my-dev-tunnel',    // Unique name for this tunnel
     })
   ]
 });
 ```
 
 2. **Set your Cloudflare API token:**
-
-The plugin will automatically find your API token using this priority order:
-1. `apiToken` option in your config
-2. `CLOUDFLARE_API_KEY` environment variable
 
 ```bash
 # Environment variable
@@ -59,10 +79,15 @@ export CLOUDFLARE_API_KEY="your-api-token-here"
 npm run dev
 ```
 
-That's it! Your local server is now accessible at `https://dev.yourdomain.com` 🎉
+Your local server is now accessible at `https://dev.yourdomain.com` 🎉
 
 ## 📋 Prerequisites
 
+### For Quick Tunnel Mode
+- **Node.js** 16.0.0 or higher
+- That's it! No Cloudflare account or API token needed.
+
+### For Named Tunnel Mode  
 - **Cloudflare Account** with a domain added to your account
 - **Cloudflare API Token** with the following permissions:
   - `Zone:Zone:Read`
@@ -71,6 +96,8 @@ That's it! Your local server is now accessible at `https://dev.yourdomain.com` �
 - **Node.js** 16.0.0 or higher
 
 ## 🔑 Cloudflare API Token Setup
+
+> **Note:** Only required for Named Tunnel Mode. Quick Tunnel Mode works without any API token.
 
 1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Click **"Create Token"**
@@ -101,18 +128,78 @@ This plugin supports both default and named imports:
 
 ```typescript
 // Default import (recommended)
-import cloudflareTunnel from 'cloudflare-tunnel-vite-plugin';
+import cloudflareTunnel from 'vite-plugin-cloudflare-tunnel';
 
 // Named import
-import { cloudflareTunnel } from 'cloudflare-tunnel-vite-plugin';
+import { cloudflareTunnel } from 'vite-plugin-cloudflare-tunnel';
 
 // Both work the same way
 export default defineConfig({
-  plugins: [cloudflareTunnel({ hostname: 'dev.example.com' })]
+  plugins: [cloudflareTunnel({ hostname: 'dev.example.com', tunnelName: 'my-dev-tunnel' })]
 });
 ```
 
+## 🌐 Access Tunnel URL in Your App
+
+Your application code can access the current tunnel URL at runtime using the virtual module:
+
+```typescript
+import { getTunnelUrl } from 'virtual:vite-plugin-cloudflare-tunnel';
+
+// In your app code
+console.log('Public tunnel URL:', getTunnelUrl());
+
+// Example: Share the URL with users
+const shareButton = document.getElementById('share');
+shareButton.onclick = () => {
+  navigator.clipboard.writeText(getTunnelUrl());
+  alert('Tunnel URL copied to clipboard!');
+};
+```
+
+**Key Features:**
+- 🔄 **Always Current** - Returns the active tunnel URL (updates automatically on port changes)
+- 🚀 **Works in Both Modes** - Quick tunnel (random URL) and named tunnel (custom domain)
+- ⚡ **Dev Only** - Virtual module is only available during development
+- 🎯 **TypeScript Ready** - Full type support with proper imports
+
+## 🔀 Two Tunnel Modes
+
+The plugin supports two distinct modes:
+
+### 🚀 Quick Tunnel Mode
+- **No configuration required** - Just add the plugin with no options
+- **Random URL** - Gets a `https://xyz.trycloudflare.com` URL
+- **No API token needed** - Works without Cloudflare account
+- **Temporary** - URL changes on each restart
+- **Perfect for**: Demos, quick sharing, development testing
+
+### 🏠 Named Tunnel Mode  
+- **Custom domain** - Use your own domain (e.g., `dev.example.com`)
+- **Persistent URL** - Same URL every time
+- **Unique tunnel name** - Give each project its own `tunnelName`; re-using the same name across multiple apps will cause them to share Cloudflare resources (tunnel, DNS records, SSL certificates) and lead to conflicts
+- **Requires API token** - Needs Cloudflare account and API setup
+- **DNS & SSL management** - Automatic domain and certificate handling
+- **Perfect for**: Persistent development, staging environments
+
 ## ⚙️ Configuration Options
+
+### Quick Tunnel Mode
+
+```typescript
+// Minimal - no options needed
+cloudflareTunnel()
+
+// With optional logging
+cloudflareTunnel({
+  port: 3000,                        // Optional: Local dev server port
+  logFile: './cloudflared.log',      // Optional: Path to write logs
+  logLevel: 'info',                  // Optional: debug, info, warn, error, fatal
+  debug: true,                       // Optional: Extra verbose logging
+})
+```
+
+### Named Tunnel Mode
 
 ```typescript
 cloudflareTunnel({
@@ -161,7 +248,7 @@ cloudflareTunnel({
 | `hostname` | `string` | **Required** | The public hostname you want (e.g., `dev.example.com`) |
 | `apiToken` | `string` | `process.env.CLOUDFLARE_API_KEY` | Cloudflare API token with tunnel permissions |
 | `port` | `number` | `5173` | Local port your dev server runs on |
-| `tunnelName` | `string` | `"vite-tunnel"` | Name for the tunnel in your Cloudflare dashboard (letters, numbers, hyphens only) |
+| `tunnelName` | `string` | `"vite-tunnel"` | Unique name for the tunnel in your Cloudflare dashboard (letters, numbers, hyphens only). This name is applied to **all** Cloudflare resources the plugin creates (tunnel, DNS record comments, SSL certificate tags). If two apps share the same `tunnelName` they will overwrite each other's resources and conflict — always give each project its own tunnel name. |
 | `dns` | `string` | `undefined` | Custom DNS record (wildcard like `*.example.com` or exact hostname match) |
 | `ssl` | `string` | `undefined` | Custom SSL certificate (wildcard like `*.example.com` or exact hostname match) |
 | `debug` | `boolean` | `false` | Enable extra debug logging for troubleshooting |
@@ -185,8 +272,8 @@ The plugin automatically tags resources it creates and can clean up mismatched r
 ### Automatic Resource Tagging
 
 **DNS Records:** All DNS records created by the plugin include a comment field with metadata:
-- Format: `cloudflare-tunnel-vite-plugin:tunnelName`
-- Example: `cloudflare-tunnel-vite-plugin:vite-tunnel`
+- Format: `vite-plugin-cloudflare-tunnel:tunnelName`
+- Example: `vite-plugin-cloudflare-tunnel:vite-tunnel`
 
 **SSL Certificates:** Since Cloudflare doesn't support metadata fields, the plugin adds a special "tag" hostname to certificates for identification:
 - Format: `cf-tunnel-plugin-{tunnelName}-{date}.{parentDomain}`
@@ -228,7 +315,7 @@ If you need to manually clean up resources:
 1. **List DNS records by tunnel:**
    ```bash
    # Using Cloudflare API - replace 'your-tunnel-name' with actual tunnel name
-   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/dns_records?comment=cloudflare-tunnel-vite-plugin:your-tunnel-name&match=all" \
+   curl -X GET "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/dns_records?comment=vite-plugin-cloudflare-tunnel:your-tunnel-name&match=all" \
      -H "Authorization: Bearer YOUR_API_TOKEN"
    ```
 
@@ -336,6 +423,7 @@ When no `ssl` option is provided, the plugin:
    // Provision a single *.dev.example.com certificate
    cloudflareTunnel({
      hostname: 'api.dev.example.com',
+    tunnelName: 'api-dev-tunnel',    // Unique name for this tunnel
      ssl: '*.dev.example.com'      // wildcard cert covers api.*, auth.*, etc.
    });
    ```
@@ -347,6 +435,7 @@ When no `ssl` option is provided, the plugin:
 ```typescript
 cloudflareTunnel({
   hostname: 'api.dev.example.com',
+  tunnelName: 'api-dev-tunnel',    // Unique name for this tunnel
   dns: '*.dev.example.com',      // Wildcard DNS for dev subdomains
   ssl: '*.dev.example.com',      // Wildcard SSL for dev subdomains
   debug: true                    // Enable debug logging
@@ -409,15 +498,35 @@ The plugin includes robust process management to prevent orphaned `cloudflared` 
 
 Check out the [`examples/`](./examples/) directory for complete working examples:
 
-- **[Basic Vite App](./examples/basic-vite-app/)** - Minimal setup demonstrating core functionality
+- **[Quick Tunnel Example](./examples/quick-tunnel-example/)** - Zero-config quick tunnel with random URL
+- **[Basic Vite App](./examples/basic-vite-app/)** - Named tunnel with custom domain
+- **[Discord Bot Webhook Receiver](./examples/discord-webhook-example/)** - Receive Discord bot interactions via webhooks
 
-To run an example:
+### Running Examples
 
+**Quick Tunnel Example (No setup required):**
+```bash
+cd examples/quick-tunnel-example
+npm install
+npm run dev
+# No API token needed - get instant public URL!
+```
+
+**Basic Vite App (Named tunnel):**
 ```bash
 cd examples/basic-vite-app
 npm install
 cp .env.example .env
 # Edit .env with your API token
+npm run dev
+```
+
+**Discord Bot Webhook Receiver:**
+```bash
+cd examples/discord-webhook-example
+npm install
+cp env.example .env
+# Edit .env with your Discord bot public key and Cloudflare API token
 npm run dev
 ```
 
@@ -485,6 +594,6 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/eastlondoner/cloudflare-tunnel-vite-plugin.git
-   cd cloudflare-tunnel-vite-plugin
+   git clone https://github.com/eastlondoner/vite-plugin-cloudflare-tunnel.git
+   cd vite-plugin-cloudflare-tunnel
    ```

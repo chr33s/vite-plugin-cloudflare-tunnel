@@ -10,7 +10,7 @@
  * @license MIT
  */
 
-import type { Plugin } from "vite";
+import type { Plugin, ViteDevServer } from "vite";
 import { bin, install } from "cloudflared";
 import fs from "node:fs/promises";
 import { spawn, exec } from "node:child_process";
@@ -21,6 +21,8 @@ import { config as dotEnvConfig } from "dotenv";
 // import { inspect } from "util";
 // // log infinite depth objects using node settings
 // inspect.defaultOptions.depth = null;
+
+const INFO_LOG_REGEX = /^.*Z INF .*/;
 
 // Zod schemas for Cloudflare API responses
 const CloudflareErrorSchema = z.object({
@@ -72,9 +74,47 @@ export type Tunnel = z.infer<typeof TunnelSchema>;
 export type DNSRecord = z.infer<typeof DNSRecordSchema>;
 
 /**
- * Configuration options for the Cloudflare Tunnel Vite plugin
+ * Base configuration options shared between named and quick tunnel modes
  */
-export interface CloudflareTunnelOptions {
+interface BaseTunnelOptions {
+  /** 
+   * Local port your dev server listens on
+   * If not specified, will automatically use Vite's configured port
+   * @default undefined (auto-detect from Vite config)
+   */
+  port?: number;
+  
+  /** 
+   * Path to write cloudflared logs to a file
+   * Useful for debugging tunnel issues
+   */
+  logFile?: string;
+  
+  /** 
+   * Log level for cloudflared process
+   * @default undefined (uses cloudflared default)
+   */
+  logLevel?: 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+  /**
+   * Enable additional verbose logging for easier debugging.
+   * When true, the plugin will output extra information prefixed with
+   * `[cloudflare-tunnel:debug]`.
+   * @default false
+   */
+  debug?: boolean;
+}
+
+/**
+ * Configuration options for named tunnel mode (requires hostname and API token)
+ */
+interface NamedTunnelOptions extends BaseTunnelOptions {
+  /** 
+   * Public hostname for the tunnel (e.g., "dev.example.com")
+   * Must be a domain in your Cloudflare account
+   */
+  hostname: string;
+  
   /** 
    * Cloudflare API token with required permissions:
    * - Zone:Zone:Read
@@ -86,19 +126,6 @@ export interface CloudflareTunnelOptions {
    * 2. CLOUDFLARE_API_KEY environment variable
    */
   apiToken?: string;
-  
-  /** 
-   * Public hostname for the tunnel (e.g., "dev.example.com")
-   * Must be a domain in your Cloudflare account
-   */
-  hostname: string;
-  
-  /** 
-   * Local port your dev server listens on
-   * If not specified, will automatically use Vite's configured port
-   * @default undefined (auto-detect from Vite config)
-   */
-  port?: number;
   
   /** 
    * Cloudflare account ID
@@ -118,18 +145,6 @@ export interface CloudflareTunnelOptions {
    * @default "vite-tunnel"
    */
   tunnelName?: string;
-  
-  /** 
-   * Path to write cloudflared logs to a file
-   * Useful for debugging tunnel issues
-   */
-  logFile?: string;
-  
-  /** 
-   * Log level for cloudflared process
-   * @default undefined (uses cloudflared default)
-   */
-  logLevel?: 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
   /** 
    * Wildcard DNS domain to ensure exists (e.g., "*.example.com").
@@ -144,14 +159,6 @@ export interface CloudflareTunnelOptions {
    * or Total TLS; otherwise it will request a regular certificate for the provided hostname.
    */
   ssl?: string;
-
-  /**
-   * Enable additional verbose logging for easier debugging.
-   * When true, the plugin will output extra information prefixed with
-   * `[cloudflare-tunnel:debug]`.
-   * @default false
-   */
-  debug?: boolean;
 
   /**
    * Cleanup configuration for managing orphaned resources
@@ -172,6 +179,22 @@ export interface CloudflareTunnelOptions {
 }
 
 /**
+ * Configuration options for quick tunnel mode (no hostname required, generates random URL)
+ */
+interface QuickTunnelOptions extends BaseTunnelOptions {
+  // No additional options beyond base options
+}
+
+/**
+ * Configuration options for the Cloudflare Tunnel Vite plugin
+ * 
+ * Two modes are supported:
+ * - Named tunnel mode: Provide `hostname` for a persistent tunnel with custom domain
+ * - Quick tunnel mode: Omit `hostname` for a temporary tunnel with random trycloudflare.com URL
+ */
+export type CloudflareTunnelOptions = NamedTunnelOptions | QuickTunnelOptions;
+
+/**
  * Creates a Vite plugin that automatically sets up Cloudflare tunnels for local development
  * 
  * @param options - Configuration options for the tunnel
@@ -180,20 +203,29 @@ export interface CloudflareTunnelOptions {
  * @example
  * ```typescript
  * import { defineConfig } from 'vite';
- * import cloudflareTunnel from 'cloudflare-tunnel-vite-plugin';
+ * import cloudflareTunnel from 'vite-plugin-cloudflare-tunnel';
  * 
+ * // Named tunnel mode (custom domain)
  * export default defineConfig({
  *   plugins: [
  *     cloudflareTunnel({
  *       hostname: 'dev.example.com',
- *       // port is optional - will auto-detect from Vite config
+ *       logLevel: 'info'
+ *     })
+ *   ]
+ * });
+ * 
+ * // Quick tunnel mode (random trycloudflare.com URL)
+ * export default defineConfig({
+ *   plugins: [
+ *     cloudflareTunnel({
  *       logLevel: 'info'
  *     })
  *   ]
  * });
  * ```
  */
-function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
+function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
   // ---------------------------------------------------------------------
   // In dev/HMR the plugin may be instantiated multiple times without the
   // Node.js process exiting.  We keep a reference to the current tunnel
@@ -202,7 +234,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   // "listen called twice" crashes when Vite restarts.
   // ---------------------------------------------------------------------
 
-  const GLOBAL_STATE = Symbol.for("cloudflare-tunnel-vite-plugin.state");
+  const GLOBAL_STATE = Symbol.for("vite-plugin-cloudflare-tunnel.state");
 
   type GlobalState = {
     child?: ReturnType<typeof spawn>;
@@ -221,25 +253,67 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   let child: ReturnType<typeof spawn> | undefined = globalState.child;
 
   // ---------------------------------------------------------------------
+  // Virtual module to expose the tunnel URL at dev time
+  // ---------------------------------------------------------------------
+  const VIRTUAL_MODULE_ID = 'virtual:vite-plugin-cloudflare-tunnel';
+  // const RESOLVED_VIRTUAL_MODULE_ID = '\0' + VIRTUAL_MODULE_ID;
+  let tunnelUrl = '';
+
+  // ---------------------------------------------------------------------
   // Load env vars & extract/validate options (this block was accidentally
   // removed in a previous edit – restoring it here).
   // ---------------------------------------------------------------------
 
 
-  // Validate and extract options with defaults
+  // Determine tunnel mode and validate options
+  const isQuickMode = !('hostname' in options);
+  console.log("isQuickMode", options);
+  
+  // Validate that quick mode options don't include named-mode-only options
+  if (isQuickMode) {
+    const namedModeOptions = ['apiToken', 'accountId', 'zoneId', 'tunnelName', 'dns', 'ssl', 'cleanup'];
+    const invalidOptions = namedModeOptions.filter(opt => opt in options);
+    if (invalidOptions.length > 0) {
+      throw new Error(
+        `[cloudflare-tunnel] The following options are only supported in named tunnel mode (when hostname is provided): ${invalidOptions.join(', ')}. ` +
+        `Either provide a hostname for named tunnel mode, or remove these options for quick tunnel mode.`
+      );
+    }
+  }
+
+  // Extract options based on mode
+  let providedApiToken: string | undefined;
+  let hostname: string | undefined;
+  let tunnelName: string;
+  let forcedAccount: string | undefined;
+  let forcedZone: string | undefined;
+  let dnsOption: string | undefined;
+  let sslOption: string | undefined;
+  let cleanupConfig: any;
+  
+  if (isQuickMode) {
+    // Quick mode - only base options
+    tunnelName = "quick-tunnel"; // Default for quick mode
+    cleanupConfig = {};
+  } else {
+    // Named mode - extract all options
+    const namedOptions = options as NamedTunnelOptions;
+    providedApiToken = namedOptions.apiToken;
+    hostname = namedOptions.hostname;
+    forcedAccount = namedOptions.accountId;
+    forcedZone = namedOptions.zoneId;
+    tunnelName = namedOptions.tunnelName || "vite-tunnel";
+    dnsOption = namedOptions.dns;
+    sslOption = namedOptions.ssl;
+    cleanupConfig = namedOptions.cleanup || {};
+  }
+
+  // Extract common options
   const {
-    apiToken: providedApiToken,
-    hostname,
     port: userProvidedPort,
-    accountId: forcedAccount,
-    zoneId: forcedZone,
-    tunnelName = "vite-tunnel",
     logFile,
     logLevel,
-    dns: dnsOption,
-    ssl: sslOption,
     debug = false,
-    cleanup: cleanupConfig = {},
   } = options;
 
   // Internal debug logger – prints only when `debug` flag enabled
@@ -250,8 +324,10 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
   };
 
   // Basic input validation
-  if (!hostname || typeof hostname !== "string") {
-    throw new Error("[cloudflare-tunnel] hostname is required and must be a valid string");
+  if (!isQuickMode && (!hostname || typeof hostname !== "string")) {
+    throw new Error("[cloudflare-tunnel] hostname is required and must be a valid string in named tunnel mode");
+  } else {
+    tunnelUrl = `https://${hostname}`;
   }
 
   // Validate tunnel name contains only DNS-safe characters
@@ -470,7 +546,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
           headers: {
             Authorization: `Bearer ${apiToken}`,
             "Content-Type": "application/json",
-            "User-Agent": "cloudflare-tunnel-vite-plugin/1.0.0",
+            "User-Agent": "vite-plugin-cloudflare-tunnel/1.0.0",
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
         }
@@ -540,6 +616,107 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
+  };
+
+  // Helper function to spawn quick tunnel and extract URL
+  const spawnQuickTunnel = async (localTarget: string): Promise<{ child: ReturnType<typeof spawn>, url: string }> => {
+    const cloudflaredArgs = ["tunnel"];
+    
+    // Add logging options
+    cloudflaredArgs.push("--loglevel", "info"); // we must use info level to get the tunnel URL
+    if (logFile) {
+      cloudflaredArgs.push("--logfile", logFile);
+    }
+    
+    
+    // Add the URL target
+    cloudflaredArgs.push("--url", localTarget);
+    
+    debugLog("Spawning quick tunnel:", bin, cloudflaredArgs);
+    const child = spawn(
+      bin,
+      cloudflaredArgs,
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+        windowsHide: true,
+        shell: process.platform === 'win32',
+      }
+    );
+    
+    console.log(`[cloudflare-tunnel] Quick tunnel process spawned with PID: ${child.pid}`);
+    
+    // Wait for the tunnel URL to be output
+    return new Promise((resolve, reject) => {
+      let urlFound = false;
+      const timeout = setTimeout(() => {
+        if (!urlFound) {
+          reject(new Error("Quick tunnel URL not found in output within 30 seconds"));
+        }
+      }, 30000);
+      
+      child.stdout?.on("data", (data) => {
+        const output = data.toString();
+        if (!globalState.shuttingDown || debug) {
+          if(effectiveLogLevel === "debug" || effectiveLogLevel === "info") {
+            console.log(`[cloudflared stdout] ${output.trim()}`);
+          } else {
+            // filter out outputs like 2025-07-30T09:29:37Z INF ... using regex
+            for(const line of output.split("\n")) {
+              if(!INFO_LOG_REGEX.test(line)) {
+                console.log(`[cloudflared stdout] ${line.trim()}`);
+              }
+            }
+          }
+        }
+      });
+      
+      child.stderr?.on("data", (data) => {
+        const error = data.toString().trim();
+        
+         // Look for the tunnel URL in various formats
+         const urlMatch = error.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+         if (urlMatch && !urlFound) {
+           urlFound = true;
+           clearTimeout(timeout);
+           resolve({ child, url: urlMatch[0] });
+         }
+
+        // Filter out noisy ICMP errors
+        if (error.includes('Failed to parse ICMP reply') || 
+            error.includes('unknow ip version 0')) {
+          if (logLevel === 'debug') {
+            console.log(`[cloudflared debug] ${error}`);
+          }
+          return;
+        }
+        
+        if (!globalState.shuttingDown || debug) {
+          if(effectiveLogLevel === "debug" || effectiveLogLevel === "info") {
+            console.error(`[cloudflared stderr] ${error}`);
+          } else {
+            // filter out outputs like 2025-07-30T09:29:37Z INF ... using regex
+            for(const line of error.split("\n")) {
+              if(!INFO_LOG_REGEX.test(line)) {
+                console.error(`[cloudflared stderr] ${line.trim()}`);
+              }
+            }
+          }
+        }
+      });
+      
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to start quick tunnel process: ${error.message}`));
+      });
+      
+      child.on("exit", (code, signal) => {
+        clearTimeout(timeout);
+        if (!urlFound) {
+          reject(new Error(`Quick tunnel process exited before URL was found (code: ${code}, signal: ${signal})`));
+        }
+      });
+    });
   };
 
   // Cleanup function to ensure cloudflared is always terminated
@@ -620,246 +797,319 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
     });
   };
 
-  return {
-    name: "vite-plugin-cloudflare-tunnel",
+  const configureServer = async (server: ViteDevServer) => {
+    // Helper to generate consistent metadata comment for DNS records
+    const generateDnsComment = () => {
+      return `vite-plugin-cloudflare-tunnel:${tunnelName}`;
+    };
 
-
-    
-    config(config) {
-      // Load environment variables from .env files
-      dotEnvConfig();
-      // Automatically configure Vite to allow tunnel hostname
-      if (!config.server) {
-        config.server = {};
-      }
+    try {
       
-      // Allow requests from the tunnel hostname for development
-      if (!config.server.allowedHosts) {
-        config.server.allowedHosts = [hostname];
-        console.log(`[cloudflare-tunnel] Configured Vite to allow requests from ${hostname}`);
-      } else if (Array.isArray(config.server.allowedHosts)) {
-        if (!config.server.allowedHosts.includes(hostname)) {
-          config.server.allowedHosts.push(hostname);
-          console.log(`[cloudflare-tunnel] Added ${hostname} to allowed hosts`);
+      // ------------------------------------------------------------
+      // Decide whether we need to restart cloudflared or keep the existing
+      // one running. We generate a hash of the **effective** runtime config
+      // (hostname, port, tunnel name, dns & ssl options) and compare it
+      // against what was used to start the currently running tunnel.
+      // ------------------------------------------------------------
+
+      const { host: serverHost, port: detectedPort } = normalizeAddress(server.httpServer?.address());
+      const port = userProvidedPort || detectedPort || server.config.server.port || 5173;
+      const newConfigHash = JSON.stringify({ isQuickMode, hostname, port, tunnelName, dnsOption, sslOption });
+
+      if (globalState.child && !globalState.child.killed && globalState.configHash === newConfigHash) {
+        console.log('[cloudflare-tunnel] Config unchanged – re-using existing tunnel');
+        // Reset shutdown flag in case it was set from a previous shutdown
+        globalState.shuttingDown = false;
+        registerExitHandler();
+        return; // Nothing else to do – keep using current tunnel
+      }
+
+      // Config changed OR no tunnel running – shut down old process if any
+      if (globalState.child && !globalState.child.killed) {
+        console.log('[cloudflare-tunnel] Config changed – terminating previous tunnel...');
+        try {
+          globalState.child.kill('SIGTERM');
+        } catch (_) {
+          /* ignore */
         }
       }
-      // If allowedHosts is true, no need to modify it
-    },
 
-    async configureServer(server) {
-      // Helper to generate consistent metadata comment for DNS records
-      const generateDnsComment = () => {
-        return `cloudflare-tunnel-vite-plugin:${tunnelName}`;
-      };
+      delete globalState.child;
+      delete globalState.configHash;
+      // Reset shutdown flag for the new tunnel
+      globalState.shuttingDown = false;
 
-      try {
+      // Handle quick tunnel mode
+      if (isQuickMode) {
+        console.log('[cloudflare-tunnel] Starting quick tunnel mode...');
+        debugLog("Quick tunnel mode - no API token or hostname required");
         
-        // ------------------------------------------------------------
-        // Decide whether we need to restart cloudflared or keep the existing
-        // one running. We generate a hash of the **effective** runtime config
-        // (hostname, port, tunnel name, dns & ssl options) and compare it
-        // against what was used to start the currently running tunnel.
-        // ------------------------------------------------------------
-
-        const serverAddress = server.httpServer?.address();
-        const port = userProvidedPort || (serverAddress && typeof serverAddress === 'object' && 'port' in serverAddress ? serverAddress.port : undefined)  || server.config.server.port || 5173;
-        const serverHost = serverAddress && typeof serverAddress === 'object' && 'address' in serverAddress ? serverAddress.address : 'localhost';
-        const newConfigHash = JSON.stringify({ hostname, port, tunnelName, dnsOption, sslOption });
-
-        if (globalState.child && !globalState.child.killed && globalState.configHash === newConfigHash) {
-          console.log('[cloudflare-tunnel] Config unchanged – re-using existing tunnel');
-          // Reset shutdown flag in case it was set from a previous shutdown
-          globalState.shuttingDown = false;
-          registerExitHandler();
-          return; // Nothing else to do – keep using current tunnel
-        }
-
-        // Config changed OR no tunnel running – shut down old process if any
-        if (globalState.child && !globalState.child.killed) {
-          console.log('[cloudflare-tunnel] Config changed – terminating previous tunnel...');
-          try {
-            globalState.child.kill('SIGTERM');
-          } catch (_) {
-            /* ignore */
-          }
-        }
-
-        delete globalState.child;
-        delete globalState.configHash;
-        // Reset shutdown flag for the new tunnel
-        globalState.shuttingDown = false;
-
-        // Resolve API token with fallback priority:
-        // 1. Provided apiToken option
-        // 2. CLOUDFLARE_API_KEY environment variable
-        const apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
-
-        if (!apiToken) {
-          throw new Error(
-            "[cloudflare-tunnel] API token is required. " +
-            "Provide it via 'apiToken' option or set the CLOUDFLARE_API_KEY environment variable. " +
-            "Get your token at: https://dash.cloudflare.com/profile/api-tokens"
-          );
-        }
-
-        // 'port' already computed above
-        console.log(`[cloudflare-tunnel] Using port ${port}${userProvidedPort === port ? ' (user-provided)' : ' (from Vite config)'}`);
-
         // 1. Ensure the cloudflared binary exists
+        await ensureCloudflaredBinary(bin);
+
+        const localTarget = getLocalTarget(serverHost, port);
+        debugLog("← Quick tunnel connecting to local target", localTarget);
+
         try {
-          await fs.access(bin);
-        } catch {
-          console.log("[cloudflare-tunnel] Installing cloudflared binary...");
-          await install(bin);
-        }
-
-        // 2. Figure out account & zone
-        const accounts = await cf(apiToken, "GET", "/accounts", undefined, z.array(AccountSchema));
-        const accountId = forcedAccount || accounts[0]?.id;
-        if (!accountId) throw new Error("Unable to determine Cloudflare account ID");
-
-        const apexDomain = hostname.split(".").slice(-2).join(".");
-        const parentDomain = hostname.split(".").slice(1).join(".");
-        debugLog("← Apex domain", apexDomain);
-        debugLog("← Parent domain", parentDomain);
-        let zoneId: string | undefined = forcedZone;
-        if(!zoneId){
-          let zones: Zone[] = [];
-          try{
-            zones = await cf(apiToken, "GET", `/zones?name=${parentDomain}`, undefined, z.array(ZoneSchema));
-          } catch (error) {
-            debugLog("← Error fetching zone for parent domain", error);
-          }
-          if(zones.length === 0){
-            zones = await cf(apiToken, "GET", `/zones?name=${apexDomain}`, undefined, z.array(ZoneSchema));
-          }
-          zoneId = zones[0]?.id;
-        }
-        if (!zoneId) throw new Error(`Zone ${apexDomain} not found in account ${accountId}`);
-
-        // Extract cleanup configuration for later use
-        const {
-          autoCleanup = true,
-        } = cleanupConfig;
-
-        // 3. Get or create the tunnel
-        const tunnels = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
-        let tunnel = tunnels[0];
-
-        if (!tunnel) {
-          console.log(`[cloudflare-tunnel] Creating tunnel '${tunnelName}'...`);
-          tunnel = await cf(apiToken, "POST", `/accounts/${accountId}/cfd_tunnel`, {
-            name: tunnelName,
-            config_src: "cloudflare",
-          }, TunnelSchema);
-        }
-        const tunnelId = tunnel.id as string;
-
-        // 3.5. Cleanup mismatched resources from current tunnel if configured
-        if (autoCleanup) {
-          console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup for tunnel '${tunnelName}'...`);
+          const { child: quickChild, url } = await spawnQuickTunnel(localTarget);
+          tunnelUrl = url;
+          child = quickChild;
           
-          // Cleanup DNS records that don't match current configuration
-          const dnsCleanup = await cleanupMismatchedDnsRecords(apiToken, zoneId, generateDnsComment(), hostname, tunnelId);
-          if (dnsCleanup.found.length > 0) {
-            console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} mismatched, ${dnsCleanup.deleted.length} deleted`);
-          }
+          // Expose to future plugin instances
+          globalState.child = child;
+          globalState.configHash = newConfigHash;
           
-          // Check for mismatched SSL certificates
-          const mismatchedSslCerts = await findMismatchedSslCertificates(apiToken, zoneId, tunnelName, hostname);
-          if (mismatchedSslCerts.length > 0) {
-            // Delete the mismatched SSL certificates
-            for (const cert of mismatchedSslCerts) {
-              await cf(apiToken, "DELETE", `/zones/${zoneId}/ssl/certificate_packs/${cert.id}`);
+          // Register cleanup handlers
+          registerExitHandler();
+          
+          console.log(`🌐  Quick tunnel ready at: ${url}`);
+          
+          // Handle port conflicts for quick tunnels
+          server.httpServer?.on('listening', async () => {
+            try {
+              const { host: actualServerHost, port: actualPort } = normalizeAddress(server.httpServer?.address());
+              
+              if (actualPort !== port) {
+                console.log(`[cloudflare-tunnel] ⚠️  Port conflict detected - Vite is using port ${actualPort} instead of ${port}`);
+                console.log(`[cloudflare-tunnel] 🔄 Quick tunnel needs to be restarted for new port...`);
+                
+                // Kill the current quick tunnel
+                killCloudflared('SIGTERM');
+                
+                // Wait a moment for cleanup
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Start a new quick tunnel with the correct port
+                
+                const newLocalTarget = getLocalTarget(actualServerHost, (actualPort ?? port));
+                
+                const { child: newChild, url: newUrl } = await spawnQuickTunnel(newLocalTarget);
+                tunnelUrl = newUrl;
+                child = newChild;
+                globalState.child = child;
+                
+                console.log(`🌐  Quick tunnel updated for port ${actualPort}: ${newUrl}`);
+                
+                // Update the global config hash to reflect the new port
+                const updatedConfigHash = JSON.stringify({ isQuickMode, hostname, port: actualPort, tunnelName, dnsOption, sslOption });
+                globalState.configHash = updatedConfigHash;
+              }
+            } catch (error) {
+              console.error(`[cloudflare-tunnel] ❌ Failed to update quick tunnel for port change: ${(error as Error).message}`);
             }
-            console.log(`[cloudflare-tunnel] 📊 SSL cleanup: ${mismatchedSslCerts.length} deleted`);
-          }
-        } else {
-          debugLog("← Cleanup skipped", cleanupConfig);
+          });
+
+          // Stop the tunnel when Vite shuts down
+          server.httpServer?.once("close", () => {
+            killCloudflared('SIGTERM');
+          });
+          
+          return; // Exit early for quick mode
+        } catch (error) {
+          console.error(`[cloudflare-tunnel] ❌ Quick tunnel setup failed: ${(error as Error).message}`);
+          throw error;
         }
+      }
 
-        const isIpv6 = serverHost.includes(':');
-        const localTarget = `http://${isIpv6 ? `[${serverHost}]` : serverHost}:${port}`;
-        debugLog("← Connecting to local target", localTarget);
-        // 4. Push ingress rules (public hostname → localhost)
-        await cf(apiToken, "PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
-          config: {
-            ingress: [
-              { hostname, service: localTarget },
-              { service: "http_status:404" },
-            ],
-          },
-        });
+      // Named tunnel mode logic starts here
+      console.log('[cloudflare-tunnel] Starting named tunnel mode...');
+      
+      // Resolve API token with fallback priority:
+      // 1. Provided apiToken option
+      // 2. CLOUDFLARE_API_KEY environment variable
+      const apiToken = providedApiToken || process.env.CLOUDFLARE_API_KEY;
 
-        // 5. DNS management
+      if (!apiToken) {
+        throw new Error(
+          "[cloudflare-tunnel] API token is required. " +
+          "Provide it via 'apiToken' option or set the CLOUDFLARE_API_KEY environment variable. " +
+          "Get your token at: https://dash.cloudflare.com/profile/api-tokens"
+        );
+      }
 
-        // Helper to generate a special "tag" hostname for SSL certificates
-        // Since SSL certs don't support metadata, we add a special hostname as a tag
-        const generateSslTagHostname = () => {
-          // we can't use .parentDomain because it's a wildcard domain and that causes an error
-          return `cf-tunnel-plugin-${tunnelName}--${parentDomain}`;
-        };
+      // 'port' already computed above
+      console.log(`[cloudflare-tunnel] Using port ${port}${userProvidedPort === port ? ' (user-provided)' : ' (from Vite config)'}`);
+
+      // 1. Ensure the cloudflared binary exists
+      await ensureCloudflaredBinary(bin);
+
+      // 2. Figure out account & zone
+      const accounts = await cf(apiToken, "GET", "/accounts", undefined, z.array(AccountSchema));
+      const accountId = forcedAccount || accounts[0]?.id;
+      if (!accountId) throw new Error("Unable to determine Cloudflare account ID");
+
+      const apexDomain = hostname!.split(".").slice(-2).join(".");
+      const parentDomain = hostname!.split(".").slice(1).join(".");
+      debugLog("← Apex domain", apexDomain);
+      debugLog("← Parent domain", parentDomain);
+      let zoneId: string | undefined = forcedZone;
+      if(!zoneId){
+        let zones: Zone[] = [];
+        try{
+          zones = await cf(apiToken, "GET", `/zones?name=${parentDomain}`, undefined, z.array(ZoneSchema));
+        } catch (error) {
+          debugLog("← Error fetching zone for parent domain", error);
+        }
+        if(zones.length === 0){
+          zones = await cf(apiToken, "GET", `/zones?name=${apexDomain}`, undefined, z.array(ZoneSchema));
+        }
+        zoneId = zones[0]?.id;
+      }
+      if (!zoneId) throw new Error(`Zone ${apexDomain} not found in account ${accountId}`);
+
+      // Extract cleanup configuration for later use
+      const {
+        autoCleanup = true,
+      } = cleanupConfig;
+
+      // 3. Get or create the tunnel
+      const tunnels = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel?name=${tunnelName}`, undefined, z.array(TunnelSchema));
+      let tunnel = tunnels[0];
+
+      if (!tunnel) {
+        console.log(`[cloudflare-tunnel] Creating tunnel '${tunnelName}'...`);
+        tunnel = await cf(apiToken, "POST", `/accounts/${accountId}/cfd_tunnel`, {
+          name: tunnelName,
+          config_src: "cloudflare",
+        }, TunnelSchema);
+      }
+      const tunnelId = tunnel.id as string;
+      // 3.5. Cleanup mismatched resources from current tunnel if configured
+      if (autoCleanup) {
+        console.log(`[cloudflare-tunnel] 🧹 Running resource cleanup for tunnel '${tunnelName}'...`);
         
-        if (dnsOption) {
-          // Ensure wildcard CNAME record exists
-          const ensureDnsRecord = async (type: "CNAME", content: string) => {
-            const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=${type}&name=${encodeURIComponent(dnsOption)}`, undefined, z.array(DNSRecordSchema));
-            if (existingWildcard.length === 0) {
-              console.log(`[cloudflare-tunnel] Creating ${type} record for ${dnsOption}...`);
-              await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
-                type,
-                name: dnsOption,
-                content,
-                proxied: true,
-                comment: generateDnsComment(),
-              }, DNSRecordSchema);
-            }
-          };
+        // Cleanup DNS records that don't match current configuration
+        const dnsCleanup = await cleanupMismatchedDnsRecords(apiToken, zoneId, generateDnsComment(), hostname!, tunnelId);
+        if (dnsCleanup.found.length > 0) {
+          console.log(`[cloudflare-tunnel] 📊 DNS cleanup: ${dnsCleanup.found.length} mismatched, ${dnsCleanup.deleted.length} deleted`);
+        }
+        
+        // Check for mismatched SSL certificates
+        const mismatchedSslCerts = await findMismatchedSslCertificates(apiToken, zoneId, tunnelName, hostname!);
+        if (mismatchedSslCerts.length > 0) {
+          // Delete the mismatched SSL certificates
+          for (const cert of mismatchedSslCerts) {
+            await cf(apiToken, "DELETE", `/zones/${zoneId}/ssl/certificate_packs/${cert.id}`);
+          }
+          console.log(`[cloudflare-tunnel] 📊 SSL cleanup: ${mismatchedSslCerts.length} deleted`);
+        }
+      } else {
+        debugLog("← Cleanup skipped", cleanupConfig);
+      }
 
-          await ensureDnsRecord("CNAME", `${tunnelId}.cfargotunnel.com`);
-        } else {
-          const wildcardDns = `*.${parentDomain}`;
-          // check if there is an existing wildcard dns record for the parent domain
-          const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${wildcardDns}`, undefined, z.array(DNSRecordSchema));
+      const localTarget = getLocalTarget(serverHost, port);
+      debugLog("← Connecting to local target", localTarget);
+      // 4. Push ingress rules (public hostname → localhost)
+      await cf(apiToken, "PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+        config: {
+          ingress: [
+            { hostname: hostname!, service: localTarget },
+            { service: "http_status:404" },
+          ],
+        },
+      });
+
+      // 5. DNS management
+
+      // Helper to generate a special "tag" hostname for SSL certificates
+      // Since SSL certs don't support metadata, we add a special hostname as a tag
+      const generateSslTagHostname = () => {
+        // we can't use .parentDomain because it's a wildcard domain and that causes an error
+        return `cf-tunnel-plugin-${tunnelName}--${parentDomain}`;
+      };
+      
+      if (dnsOption) {
+        // Ensure wildcard CNAME record exists
+        const ensureDnsRecord = async (type: "CNAME", content: string) => {
+          const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=${type}&name=${encodeURIComponent(dnsOption)}`, undefined, z.array(DNSRecordSchema));
           if (existingWildcard.length === 0) {
+            console.log(`[cloudflare-tunnel] Creating ${type} record for ${dnsOption}...`);
+            await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
+              type,
+              name: dnsOption,
+              content,
+              proxied: true,
+              comment: generateDnsComment(),
+            }, DNSRecordSchema);
+          }
+        };
 
-            // Fallback: Ensure CNAME for specific hostname
-            const existingDnsRecords = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname}`, undefined, z.array(DNSRecordSchema));
-            const existing = existingDnsRecords.length > 0;
+        await ensureDnsRecord("CNAME", `${tunnelId}.cfargotunnel.com`);
+      } else {
+        const wildcardDns = `*.${parentDomain}`;
+        // check if there is an existing wildcard dns record for the parent domain
+        const existingWildcard = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${wildcardDns}`, undefined, z.array(DNSRecordSchema));
+        if (existingWildcard.length === 0) {
 
-            if (!existing) {
-              console.log(`[cloudflare-tunnel] Creating DNS record for ${hostname}...`);
-              await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
-                type: "CNAME",
-                name: hostname,
-                content: `${tunnelId}.cfargotunnel.com`,
-                proxied: true,
-                comment: generateDnsComment(),
-              }, DNSRecordSchema);
-            }
+          // Fallback: Ensure CNAME for specific hostname
+          const existingDnsRecords = await cf(apiToken, "GET", `/zones/${zoneId}/dns_records?type=CNAME&name=${hostname!}`, undefined, z.array(DNSRecordSchema));
+          const existing = existingDnsRecords.length > 0;
+
+          if (!existing) {
+            console.log(`[cloudflare-tunnel] Creating DNS record for ${hostname}...`);
+            await cf(apiToken, "POST", `/zones/${zoneId}/dns_records`, {
+              type: "CNAME",
+              name: hostname!,
+              content: `${tunnelId}.cfargotunnel.com`,
+              proxied: true,
+              comment: generateDnsComment(),
+            }, DNSRecordSchema);
           }
         }
+      }
 
-        // 6. Grab the tunnel token (single JWT string)
-        const token = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`, undefined, z.string());
+      // 6. Grab the tunnel token (single JWT string)
+      const token = await cf(apiToken, "GET", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`, undefined, z.string());
 
-        // 7. SSL management
-        try {
-          // Use the newer certificate packs endpoint (edge_certificates is deprecated)
-          const certListRaw: any = await cf(apiToken, "GET", `/zones/${zoneId}/ssl/certificate_packs?status=all`, undefined, z.any());
-          const certPacks: any[] = Array.isArray(certListRaw) ? certListRaw : (certListRaw.result || []);
+      // 7. SSL management
+      try {
+        // Use the newer certificate packs endpoint (edge_certificates is deprecated)
+        const certListRaw: any = await cf(apiToken, "GET", `/zones/${zoneId}/ssl/certificate_packs?status=all`, undefined, z.any());
+        const certPacks: any[] = Array.isArray(certListRaw) ? certListRaw : (certListRaw.result || []);
 
-          const certContainingHost = (host: string) => certPacks.filter((c) => (c.hostnames || c.hosts || []).includes(host))?.[0];          
-          if (sslOption) {
-            const isWildcard = sslOption.startsWith('*.');
-            const certNeededHost = sslOption;
+        const certContainingHost = (host: string) => certPacks.filter((c) => (c.hostnames || c.hosts || []).includes(host))?.[0];          
+        if (sslOption) {
+          const isWildcard = sslOption.startsWith('*.');
+          const certNeededHost = sslOption;
 
-            const matchingCert = certContainingHost(certNeededHost);
+          const matchingCert = certContainingHost(certNeededHost);
+          
+          if (!matchingCert) {
+            console.log(`[cloudflare-tunnel] Requesting ${isWildcard ? 'wildcard ' : ''}certificate for ${certNeededHost}...`);
+            const tagHostname = generateSslTagHostname();
+            const certificateHosts = [certNeededHost, tagHostname];
+            debugLog(`Adding tag hostname to certificate: ${tagHostname}`);
             
-            if (!matchingCert) {
-              console.log(`[cloudflare-tunnel] Requesting ${isWildcard ? 'wildcard ' : ''}certificate for ${certNeededHost}...`);
+            const newCert: any = await retryWithBackoff(() =>
+              cf(apiToken, "POST", `/zones/${zoneId}/ssl/certificate_packs/order`, {
+                hosts: certificateHosts,
+                "certificate_authority": "lets_encrypt",
+                "type": "advanced",
+                "validation_method": isWildcard ? "txt" : "http",
+                "validity_days": 90,
+                cloudflare_branding: false
+              })
+            );
+            
+            // Track the newly created certificate
+            if (newCert && newCert.id) {
+              trackSslCertificate(newCert.id, certificateHosts, tunnelName);
+            }
+          } else {
+            debugLog("← Edge certificate already exists", matchingCert);
+          }
+        } else {
+          const wildcardDomain = `*.${parentDomain}`;
+          const wildcardExists = certContainingHost(wildcardDomain);
+          if (!wildcardExists) {
+            // Fetch Total TLS status from the new ACM endpoint
+            const totalTls = await cf(apiToken, "GET", `/zones/${zoneId}/acm/total_tls`, undefined, z.object({ status: z.string() }));
+            debugLog("← Total TLS", totalTls);
+            const existingHostnameCert = certContainingHost(hostname!);
+            if (totalTls.status !== "on" && !existingHostnameCert) {
+              console.log(`[cloudflare-tunnel] Requesting edge certificate for ${hostname}...`);
               const tagHostname = generateSslTagHostname();
-              const certificateHosts = [certNeededHost, tagHostname];
+              const certificateHosts = [hostname!, tagHostname];
               debugLog(`Adding tag hostname to certificate: ${tagHostname}`);
               
               const newCert: any = await retryWithBackoff(() =>
@@ -867,7 +1117,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                   hosts: certificateHosts,
                   "certificate_authority": "lets_encrypt",
                   "type": "advanced",
-                  "validation_method": isWildcard ? "txt" : "http",
+                  "validation_method": "txt",
                   "validity_days": 90,
                   cloudflare_branding: false
                 })
@@ -878,210 +1128,242 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
                 trackSslCertificate(newCert.id, certificateHosts, tunnelName);
               }
             } else {
-              debugLog("← Edge certificate already exists", matchingCert);
+              debugLog("← Edge certificate already exists", existingHostnameCert);
             }
           } else {
-            const wildcardDomain = `*.${parentDomain}`;
-            const wildcardExists = certContainingHost(wildcardDomain);
-            if (!wildcardExists) {
-              // Fetch Total TLS status from the new ACM endpoint
-              const totalTls = await cf(apiToken, "GET", `/zones/${zoneId}/acm/total_tls`, undefined, z.object({ status: z.string() }));
-              debugLog("← Total TLS", totalTls);
-              const existingHostnameCert = certContainingHost(hostname);
-              if (totalTls.status !== "on" && !existingHostnameCert) {
-                console.log(`[cloudflare-tunnel] Requesting edge certificate for ${hostname}...`);
-                const tagHostname = generateSslTagHostname();
-                const certificateHosts = [hostname, tagHostname];
-                debugLog(`Adding tag hostname to certificate: ${tagHostname}`);
-                
-                const newCert: any = await retryWithBackoff(() =>
-                  cf(apiToken, "POST", `/zones/${zoneId}/ssl/certificate_packs/order`, {
-                    hosts: certificateHosts,
-                    "certificate_authority": "lets_encrypt",
-                    "type": "advanced",
-                    "validation_method": "txt",
-                    "validity_days": 90,
-                    cloudflare_branding: false
-                  })
-                );
-                
-                // Track the newly created certificate
-                if (newCert && newCert.id) {
-                  trackSslCertificate(newCert.id, certificateHosts, tunnelName);
-                }
-              } else {
-                debugLog("← Edge certificate already exists", existingHostnameCert);
-              }
-            } else {
-              debugLog("← Edge certificate (wildcard) already exists", wildcardExists, wildcardDomain);
-            }
+            debugLog("← Edge certificate (wildcard) already exists", wildcardExists, wildcardDomain);
           }
-        } catch (sslError) {
-          console.error(`[cloudflare-tunnel] ⚠️  SSL management error: ${(sslError as Error).message}`);
-          throw sslError;
         }
-
-        // 7. Fire up cloudflared
-        const cloudflaredArgs = ["tunnel"];
-        
-        // Add logging options (these go before the 'run' subcommand)
-        cloudflaredArgs.push("--loglevel", effectiveLogLevel);
-        if (logFile) {
-          cloudflaredArgs.push("--logfile", logFile);
-        }
-        
-
-        // Log *then* add the token so token is not logged
-        debugLog("Spawning cloudflared", bin, cloudflaredArgs);
-        // Add the run subcommand and token
-        cloudflaredArgs.push("run", "--token", token);
-        child = spawn(
-          bin,
-          cloudflaredArgs,
-          {
-            stdio: ["ignore", "pipe", "pipe"],
-            // Keep child in same process group (default behavior)
-            detached: false,
-            // Prevent an extra console window on Windows and ensure compatibility
-            windowsHide: true,
-            // Use the system shell on Windows to properly locate .exe if needed
-            shell: process.platform === 'win32',
-          }
-        );
-        console.log(`[cloudflare-tunnel] Process spawned with PID: ${child.pid}`);
-
-        // Expose to future plugin instances
-        globalState.child = child;
-        globalState.configHash = newConfigHash;
-        
-        // Register cleanup handlers now that we have a child process
-        registerExitHandler();
-
-        // Wait for tunnel to establish connection
-        let tunnelReady = false;
-        child.stdout?.on("data", (data) => {
-          const output = data.toString();
-          if (!globalState.shuttingDown || debug) {
-            console.log(`[cloudflared stdout] ${output.trim()}`);
-          }
-          if (output.includes("Connection") && output.includes("registered")) {
-            if (!tunnelReady) {
-              tunnelReady = true;
-              console.log(`🌐  Cloudflare tunnel started for https://${hostname}`);
-            }
-          }
-        });
-
-        child.stderr?.on("data", (data) => {
-          const error = data.toString().trim();
-          
-          // Filter out noisy ICMP errors that don't affect functionality
-          if (error.includes('Failed to parse ICMP reply') || 
-              error.includes('unknow ip version 0')) {
-            // Only log ICMP errors in debug mode
-            if (logLevel === 'debug') {
-              console.log(`[cloudflared debug] ${error}`);
-            }
-            return;
-          }
-          
-          if (!globalState.shuttingDown || debug) {
-            console.error(`[cloudflared stderr] ${error}`);
-          }
-          
-          // Highlight actual errors and failures, but respect shutdown flag
-          if (error.toLowerCase().includes('error') || 
-              error.toLowerCase().includes('failed') ||
-              error.toLowerCase().includes('fatal')) {
-            if (!globalState.shuttingDown || debug) {
-              console.error(`[cloudflare-tunnel] ⚠️  ${error}`);
-            }
-          }
-        });
-
-        child.on("error", (error) => {
-          console.error(`[cloudflare-tunnel] ❌ Failed to start tunnel process: ${error.message}`);
-          if (error.message.includes('ENOENT')) {
-            console.error(`[cloudflare-tunnel] Hint: cloudflared binary may not be installed correctly`);
-          }
-        });
-
-        child.on("exit", (code, signal) => {
-          if (code !== 0 && code !== null) {
-            console.error(`[cloudflare-tunnel] ❌ Tunnel process exited with code ${code}`);
-            if (signal) {
-              console.error(`[cloudflare-tunnel] Process terminated by signal: ${signal}`);
-            }
-          } else if (code === 0) {
-            console.log(`[cloudflare-tunnel] ✅ Tunnel process exited cleanly`);
-          }
-        });
-
-        // Fallback banner if we don't detect connection within reasonable time
-        setTimeout(() => {
-          if (!tunnelReady) {
-            console.log(`🌐  Cloudflare tunnel starting for https://${hostname}`);
-          }
-        }, 3000);
-
-        // Stop the tunnel when Vite shuts down
-        server.httpServer?.once("close", () => {
-          killCloudflared('SIGTERM');
-        });
-
-        // Handle the case where Vite chooses a different port due to conflicts
-        server.httpServer?.on('listening', async () => {
-          try {
-            const actualAddress = server.httpServer?.address();
-            const actualPort = actualAddress && typeof actualAddress === 'object' && 'port' in actualAddress ? actualAddress.port : port;
-            
-            if (actualPort !== port) {
-              console.log(`[cloudflare-tunnel] ⚠️  Port conflict detected - Vite is using port ${actualPort} instead of ${port}`);
-              console.log(`[cloudflare-tunnel] 🔄 Updating tunnel configuration...`);
-              
-              // Update the tunnel configuration with the new port
-              const actualServerHost = actualAddress && typeof actualAddress === 'object' && 'address' in actualAddress ? actualAddress.address : 'localhost';
-              const isIpv6 = actualServerHost.includes(':');
-              const newLocalTarget = `http://${isIpv6 ? `[${actualServerHost}]` : actualServerHost}:${actualPort}`;
-              
-              debugLog("← Updating local target to", newLocalTarget);
-              
-              // Update ingress rules with the correct port
-              await cf(apiToken, "PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
-                config: {
-                  ingress: [
-                    { hostname, service: newLocalTarget },
-                    { service: "http_status:404" },
-                  ],
-                },
-              });
-              
-              console.log(`[cloudflare-tunnel] ✅ Tunnel configuration updated to use port ${actualPort}`);
-              
-              // Update the global config hash to reflect the new port
-              const updatedConfigHash = JSON.stringify({ hostname, port: actualPort, tunnelName, dnsOption, sslOption });
-              globalState.configHash = updatedConfigHash;
-            }
-          } catch (error) {
-            console.error(`[cloudflare-tunnel] ❌ Failed to update tunnel for port change: ${(error as Error).message}`);
-          }
-        });
-
-      } catch (error: any) {
-        console.error(`[cloudflare-tunnel] ❌ Setup failed: ${error.message}`);
-        
-        // Provide helpful error context
-        if (error.message.includes('API token')) {
-          console.error(`[cloudflare-tunnel] 💡 Check your API token at: https://dash.cloudflare.com/profile/api-tokens`);
-          console.error(`[cloudflare-tunnel] 💡 Required permissions: Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit`);
-        } else if (error.message.includes('Zone') && error.message.includes('not found')) {
-          console.error(`[cloudflare-tunnel] 💡 Make sure '${hostname}' domain is added to your Cloudflare account`);
-        } else if (error.message.includes('cloudflared')) {
-          console.error(`[cloudflare-tunnel] 💡 Try deleting node_modules and reinstalling to get a fresh cloudflared binary`);
-        }
-        
-        throw error;
+      } catch (sslError) {
+        console.error(`[cloudflare-tunnel] ⚠️  SSL management error: ${(sslError as Error).message}`);
+        throw sslError;
       }
+
+      // 7. Fire up cloudflared
+      const cloudflaredArgs = ["tunnel"];
+      
+      // Add logging options (these go before the 'run' subcommand)
+      cloudflaredArgs.push("--loglevel", effectiveLogLevel);
+      if (logFile) {
+        cloudflaredArgs.push("--logfile", logFile);
+      }
+      
+
+      // Log *then* add the token so token is not logged
+      debugLog("Spawning cloudflared", bin, cloudflaredArgs);
+      // Add the run subcommand and token
+      cloudflaredArgs.push("run", "--token", token);
+      child = spawn(
+        bin,
+        cloudflaredArgs,
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          // Keep child in same process group (default behavior)
+          detached: false,
+          // Prevent an extra console window on Windows and ensure compatibility
+          windowsHide: true,
+          // Use the system shell on Windows to properly locate .exe if needed
+          shell: process.platform === 'win32',
+        }
+      );
+      console.log(`[cloudflare-tunnel] Process spawned with PID: ${child.pid}`);
+
+      // Expose to future plugin instances
+      globalState.child = child;
+      globalState.configHash = newConfigHash;
+      
+      // Register cleanup handlers now that we have a child process
+      registerExitHandler();
+
+      // Wait for tunnel to establish connection
+      let tunnelReady = false;
+      child.stdout?.on("data", (data) => {
+        const output = data.toString();
+        if (!globalState.shuttingDown || debug) {
+          console.log(`[cloudflared stdout] ${output.trim()}`);
+        }
+        if (output.includes("Connection") && output.includes("registered")) {
+          if (!tunnelReady) {
+            tunnelReady = true;
+            console.log(`🌐  Cloudflare tunnel started for https://${hostname}`);
+          }
+        }
+      });
+
+      child.stderr?.on("data", (data) => {
+        const error = data.toString().trim();
+        
+        // Filter out noisy ICMP errors that don't affect functionality
+        if (error.includes('Failed to parse ICMP reply') || 
+            error.includes('unknow ip version 0')) {
+          // Only log ICMP errors in debug mode
+          if (logLevel === 'debug') {
+            console.log(`[cloudflared debug] ${error}`);
+          }
+          return;
+        }
+        
+        if (!globalState.shuttingDown || debug) {
+          console.error(`[cloudflared stderr] ${error}`);
+        }
+        
+        // Highlight actual errors and failures, but respect shutdown flag
+        if (error.toLowerCase().includes('error') || 
+            error.toLowerCase().includes('failed') ||
+            error.toLowerCase().includes('fatal')) {
+          if (!globalState.shuttingDown || debug) {
+            console.error(`[cloudflare-tunnel] ⚠️  ${error}`);
+          }
+        }
+      });
+
+      child.on("error", (error) => {
+        console.error(`[cloudflare-tunnel] ❌ Failed to start tunnel process: ${error.message}`);
+        if (error.message.includes('ENOENT')) {
+          console.error(`[cloudflare-tunnel] Hint: cloudflared binary may not be installed correctly`);
+        }
+      });
+
+      child.on("exit", (code, signal) => {
+        if (code !== 0 && code !== null) {
+          console.error(`[cloudflare-tunnel] ❌ Tunnel process exited with code ${code}`);
+          if (signal) {
+            console.error(`[cloudflare-tunnel] Process terminated by signal: ${signal}`);
+          }
+        } else if (code === 0) {
+          console.log(`[cloudflare-tunnel] ✅ Tunnel process exited cleanly`);
+        }
+      });
+
+      // Fallback banner if we don't detect connection within reasonable time
+      setTimeout(() => {
+        if (!tunnelReady) {
+          console.log(`🌐  Cloudflare tunnel starting for https://${hostname}`);
+        }
+      }, 3000);
+
+      // Stop the tunnel when Vite shuts down
+      server.httpServer?.once("close", () => {
+        killCloudflared('SIGTERM');
+      });
+
+      // Handle the case where Vite chooses a different port due to conflicts
+      server.httpServer?.on('listening', async () => {
+        try {
+          const { host: actualServerHost, port: actualPort } = normalizeAddress(server.httpServer?.address());
+          
+          if (actualPort !== port) {
+            console.log(`[cloudflare-tunnel] ⚠️  Port conflict detected - Vite is using port ${actualPort} instead of ${port}`);
+            console.log(`[cloudflare-tunnel] 🔄 Updating tunnel configuration...`);
+            
+            // Update the tunnel configuration with the new port
+            
+            const newLocalTarget = getLocalTarget(actualServerHost, (actualPort ?? port));
+            
+            debugLog("← Updating local target to", newLocalTarget);
+            
+            // Update ingress rules with the correct port
+            await cf(apiToken, "PUT", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+              config: {
+                ingress: [
+                  { hostname: hostname!, service: newLocalTarget },
+                  { service: "http_status:404" },
+                ],
+              },
+            });
+            
+            console.log(`[cloudflare-tunnel] ✅ Tunnel configuration updated to use port ${actualPort}`);
+            
+            // Update the global config hash to reflect the new port
+            const updatedConfigHash = JSON.stringify({ hostname, port: actualPort, tunnelName, dnsOption, sslOption });
+            globalState.configHash = updatedConfigHash;
+          }
+        } catch (error) {
+          console.error(`[cloudflare-tunnel] ❌ Failed to update tunnel for port change: ${(error as Error).message}`);
+        }
+      });
+
+    } catch (error: any) {
+      console.error(`[cloudflare-tunnel] ❌ Setup failed: ${error.message}`);
+      
+      // Provide helpful error context
+      if (error.message.includes('API token')) {
+        console.error(`[cloudflare-tunnel] 💡 Check your API token at: https://dash.cloudflare.com/profile/api-tokens`);
+        console.error(`[cloudflare-tunnel] 💡 Required permissions: Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit`);
+      } else if (error.message.includes('Zone') && error.message.includes('not found')) {
+        console.error(`[cloudflare-tunnel] 💡 Make sure '${hostname}' domain is added to your Cloudflare account`);
+      } else if (error.message.includes('cloudflared')) {
+        console.error(`[cloudflare-tunnel] 💡 Try deleting node_modules and reinstalling to get a fresh cloudflared binary`);
+      }
+      
+      throw error;
+    }
+  };
+
+  return {
+    name: "vite-plugin-cloudflare-tunnel",
+    enforce: "pre",
+
+    
+    config(config) {
+      // Load environment variables from .env files
+      dotEnvConfig();
+      
+      // Skip hostname configuration for quick mode
+      if (isQuickMode) {
+        debugLog("Quick mode - skipping hostname configuration");
+        return;
+      }
+      
+      // Automatically configure Vite to allow tunnel hostname for named mode
+      if (!config.server) {
+        config.server = {};
+      }
+      
+      // Allow requests from the tunnel hostname for development
+      if (!config.server.allowedHosts) {
+        config.server.allowedHosts = [hostname!];
+        console.log(`[cloudflare-tunnel] Configured Vite to allow requests from ${hostname}`);
+      } else if (Array.isArray(config.server.allowedHosts)) {
+        if (!config.server.allowedHosts.includes(hostname!)) {
+          config.server.allowedHosts.push(hostname!);
+          console.log(`[cloudflare-tunnel] Added ${hostname} to allowed hosts`);
+        }
+      }
+      return {
+        build: {
+          rollupOptions: {
+            output: {
+              manualChunks: {
+                "vite-plugin-cloudflare-tunnel": [VIRTUAL_MODULE_ID]
+              }
+            }
+          }
+        }
+      }
+    },
+
+    configureServer(server) {
+      // start the tunnel process but don't block on it in the pre hook
+      const configuredPromise = configureServer(server);
+      return async () => {
+        // now in the post hook, wait for the tunnel process to start
+        await configuredPromise;
+      };
+    },
+
+    resolveId(id) {
+      if (id === VIRTUAL_MODULE_ID) {
+        return '\0' + VIRTUAL_MODULE_ID;
+      }
+      return;
+    },
+
+    load(id) {
+      if (id === '\0' + VIRTUAL_MODULE_ID) {
+        return `export function getTunnelUrl() { return ${JSON.stringify(tunnelUrl)}; }`;
+      }
+      return;
     },
 
     closeBundle() {
@@ -1091,6 +1373,46 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
       delete globalState.shuttingDown;
     },
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Utility functions (extracted to remove duplication)                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Normalize the result of server.address() to extract host and port in a
+ * platform-agnostic way.
+ */
+function normalizeAddress(address: string | { address?: string; port?: number } | null | undefined): { host: string; port?: number } {
+  if (address && typeof address === 'object') {
+    return {
+      host: 'address' in address && address.address ? (address as any).address : 'localhost',
+      port: 'port' in address && typeof (address as any).port === 'number' ? (address as any).port : undefined,
+    };
+  }
+  return { host: 'localhost' };
+}
+
+/**
+ * Ensure that the cloudflared binary exists on disk, installing it if missing.
+ * @param binPath - Path where the binary should live.
+ */
+async function ensureCloudflaredBinary(binPath: string) {
+  try {
+    await fs.access(binPath);
+  } catch {
+    console.log("[cloudflare-tunnel] Installing cloudflared binary...");
+    await install(binPath);
+  }
+}
+
+/**
+ * Build a http://host:port URL suitable for cloudflared ingress rules,
+ * correctly handling IPv6 addresses.
+ */
+function getLocalTarget(host: string, port: number): string {
+  const isIpv6 = host.includes(":");
+  return `http://${isIpv6 ? `[${host}]` : host}:${port}`;
 }
 
 // Export both as named export and default export

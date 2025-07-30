@@ -1,5 +1,5 @@
 import { defineConfig, type Plugin } from 'vite';
-import { cloudflareTunnel } from 'cloudflare-tunnel-vite-plugin';
+import { cloudflareTunnel } from 'vite-plugin-cloudflare-tunnel';
 
 export default defineConfig({
   plugins: [

@@ -1,6 +1,6 @@
 # Basic Vite App Example
 
-This example demonstrates how to use the `cloudflare-tunnel-vite-plugin` with a basic Vite application.
+This example demonstrates how to use the `vite-plugin-cloudflare-tunnel` with a basic Vite application.
 
 ## Features Demonstrated
 

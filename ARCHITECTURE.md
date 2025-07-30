@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-The `cloudflare-tunnel-vite-plugin` is a specialized Vite plugin designed to automate the process of exposing a local development server to the internet via a Cloudflare Tunnel. Its primary purpose is to simplify local development by providing public HTTPS access to a Vite-powered application without requiring manual tunnel setup, port forwarding, or complex certificate management.
+The `vite-plugin-cloudflare-tunnel` is a specialized Vite plugin designed to automate the process of exposing a local development server to the internet via a Cloudflare Tunnel. Its primary purpose is to simplify local development by providing public HTTPS access to a Vite-powered application without requiring manual tunnel setup, port forwarding, or complex certificate management.
     
 This plugin streamlines the development workflow, allowing developers to quickly share their local work, test webhooks, or collaborate with others by making their development server accessible over a public URL, secured by Cloudflare's infrastructure.
                                                         
@@ -87,7 +87,7 @@ The project leverages several external libraries to achieve its functionality:
                             
 ## 5. How Everything Fits Together
 
-The `cloudflare-tunnel-vite-plugin` seamlessly integrates into the Vite development environment to provide an "always-on" public tunnel.
+The `vite-plugin-cloudflare-tunnel` seamlessly integrates into the Vite development environment to provide an "always-on" public tunnel.
                             
 1.  **Plugin Initialization**: When Vite starts its development server, it invokes the `cloudflareTunnel` function's `configureServer` hook.
 2.  **API Communication & Resource Provisioning**: Inside `configureServer`, the plugin orchestrates a series of highly validated API calls to Cloudflare. It intelligently identifies the correct account and zone, then creates or reuses a Cloudflare Tunnel resource, and sets up the necessary ingress rules to point traffic from a chosen `hostname` to the local Vite server's `localhost:port`. Crucially, it also ensures the correct CNAME DNS record is in place for the `hostname`.

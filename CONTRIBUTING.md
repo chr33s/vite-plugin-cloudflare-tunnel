@@ -6,8 +6,8 @@ Thank you for your interest in contributing! This guide will help you get starte
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://github.com/eastlondoner/cloudflare-tunnel-vite-plugin.git
-   cd cloudflare-tunnel-vite-plugin
+   git clone https://github.com/eastlondoner/vite-plugin-cloudflare-tunnel.git
+   cd vite-plugin-cloudflare-tunnel
    ```
 
 2. **Install dependencies:**
@@ -146,7 +146,7 @@ For security vulnerabilities, please:
 ## Questions?
 
 - Check the [README](README.md) for basic usage
-- Look through existing [issues](https://github.com/eastlondoner/cloudflare-tunnel-vite-plugin/issues)
+- Look through existing [issues](https://github.com/eastlondoner/vite-plugin-cloudflare-tunnel/issues)
 - Create a new issue for questions not covered elsewhere
 
 Thank you for contributing! 🎉
