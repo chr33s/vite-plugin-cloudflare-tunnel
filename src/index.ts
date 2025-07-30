@@ -341,7 +341,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         
         // Look for our tag hostname pattern with current tunnel name
         return certHosts.some((host: string) => 
-          host.startsWith(`cf-tunnel-plugin-${currentTunnelName}.`)
+          host.startsWith(`cf-tunnel-plugin-${currentTunnelName}--`)
         );
       });
       
@@ -796,7 +796,8 @@ function cloudflareTunnel(options: CloudflareTunnelOptions): Plugin {
         // Helper to generate a special "tag" hostname for SSL certificates
         // Since SSL certs don't support metadata, we add a special hostname as a tag
         const generateSslTagHostname = () => {
-          return `cf-tunnel-plugin-${tunnelName}.${parentDomain}`;
+          // we can't use .parentDomain because it's a wildcard domain and that causes an error
+          return `cf-tunnel-plugin-${tunnelName}--${parentDomain}`;
         };
         
         if (dnsOption) {

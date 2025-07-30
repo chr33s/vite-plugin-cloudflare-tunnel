@@ -304,6 +304,44 @@ When no `ssl` option is provided, the plugin:
 2. If no wildcard exists, checks if Total TLS is enabled
 3. If neither exists, requests a regular certificate for the hostname
 
+#### SSL/TLS Scenarios & Recommendations
+
+> These guidelines cover the most common SSL/TLS situations you might encounter when exposing local development servers through Cloudflare.
+
+0. **First-level subdomains with Universal SSL**  
+   For a simple subdomain such as `dev.example.com` Cloudflare’s free Universal SSL already includes a certificate that covers `*.example.com`.  
+   👉 In this case **no extra certificate** needs to be created – the tunnel is ready as soon as it starts.
+
+   ```typescript
+   // Universal SSL already covers *.example.com so no ssl option is required
+   cloudflareTunnel({
+     hostname: 'dev.example.com'
+   });
+   ```
+
+1. **Nested sub-domains without Advanced Certificate Management (ACM)**  
+   If you attempt to use a hostname with more than one level of sub-domain (e.g. `api.dev.example.com`) Cloudflare requires an **Advanced Certificate** to cover that hostname.  
+   Without ACM enabled the plugin cannot order that certificate, so stick to `dev.example.com`, `staging.example.com`, etc.  
+   If you do have ACM you can use nested sub-domains freely – see point&nbsp;3 below.
+
+2. **Total TLS support**  
+   Cloudflare’s *Total TLS* (a feature inside ACM) automatically provisions certificates as soon as a DNS record is created.  
+   The plugin detects when Total TLS is enabled and will use these certificates automatically so you don’t consume any of your ACM quota.  
+   We highly recommend enabling Total TLS on development zones.
+
+3. **Pre-provisioning a wildcard with the `ssl` option**  
+   Ordering a brand-new certificate can take **3-10&nbsp;minutes**. If you regularly work with many nested sub-domains you can order **one wildcard certificate** upfront and share it between all your dev apps:
+
+   ```typescript
+   // Provision a single *.dev.example.com certificate
+   cloudflareTunnel({
+     hostname: 'api.dev.example.com',
+     ssl: '*.dev.example.com'      // wildcard cert covers api.*, auth.*, etc.
+   });
+   ```
+
+   Every tunnel that targets `*.dev.example.com` will be secured instantly without waiting or consuming additional ACM quota.
+
 ### Combined DNS & SSL Example
 
 ```typescript
