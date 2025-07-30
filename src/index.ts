@@ -103,6 +103,14 @@ interface BaseTunnelOptions {
    * @default false
    */
   debug?: boolean;
+
+  /**
+   * Enable or disable the tunnel plugin. When set to `false` the plugin is
+   * completely disabled — cloudflared will NOT be downloaded or started but
+   * the virtual module is still available (it returns an empty string).
+   * @default true
+   */
+  enabled?: boolean;
 }
 
 /**
@@ -226,6 +234,37 @@ export type CloudflareTunnelOptions = NamedTunnelOptions | QuickTunnelOptions;
  * ```
  */
 function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
+  // ---------------------------------------------------------------------
+  // Early exit when plugin is explicitly disabled via the `enabled` option.
+  // We still provide the virtual module so application code can import it
+  // safely, however it will always return an empty string.
+  // ---------------------------------------------------------------------
+  const { enabled = true } = options as { enabled?: boolean };
+  if (enabled === false) {
+    const VIRTUAL_MODULE_ID_STUB = 'virtual:vite-plugin-cloudflare-tunnel';
+    return {
+      name: 'vite-plugin-cloudflare-tunnel',
+      enforce: 'pre',
+
+      // Skip all config modifications when disabled
+      config() { /* no-op */ },
+      configureServer() { /* no-op */ },
+
+      resolveId(id) {
+        if (id === VIRTUAL_MODULE_ID_STUB) {
+          return '\0' + VIRTUAL_MODULE_ID_STUB;
+        }
+        return;
+      },
+
+      load(id) {
+        if (id === '\0' + VIRTUAL_MODULE_ID_STUB) {
+          return 'export function getTunnelUrl() { return ""; }';
+        }
+        return;
+      },
+    } as Plugin;
+  }
   // ---------------------------------------------------------------------
   // In dev/HMR the plugin may be instantiated multiple times without the
   // Node.js process exiting.  We keep a reference to the current tunnel

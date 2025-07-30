@@ -282,6 +282,7 @@ cloudflareTunnel({
 | `hostname` | `string` | **Required** | The public hostname you want (e.g., `dev.example.com`) |
 | `apiToken` | `string` | `process.env.CLOUDFLARE_API_KEY` | Cloudflare API token with tunnel permissions |
 | `port` | `number` | `5173` | Local port your dev server runs on |
+| `enabled` | `boolean` | `true` | When set to `false` the plugin is **disabled** — `cloudflared` will not be downloaded or started. The virtual module is still available but returns an empty string. Useful for temporarily switching off the tunnel without removing the plugin. |
 | `tunnelName` | `string` | `"vite-tunnel"` | Unique name for the tunnel in your Cloudflare dashboard (letters, numbers, hyphens only). This name is applied to **all** Cloudflare resources the plugin creates (tunnel, DNS record comments, SSL certificate tags). If two apps share the same `tunnelName` they will overwrite each other's resources and conflict — always give each project its own tunnel name. |
 | `dns` | `string` | `undefined` | Custom DNS record (wildcard like `*.example.com` or exact hostname match) |
 | `ssl` | `string` | `undefined` | Custom SSL certificate (wildcard like `*.example.com` or exact hostname match) |
