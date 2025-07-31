@@ -91,20 +91,22 @@ temp/
 .Trashes
 ehthumbs.db
 Thumbs.db
-# SpecStory explanation file
-.specstory/.what-is-this.md
 
 # Examples - ignore node_modules and build artifacts in examples
 examples/*/node_modules/
 examples/*/dist/
 examples/*/.env
 
-# Plugin-specific log files
-cloudflared.log
-vite-output.log
+# log files
+*.log
 
 # Development-specific files and folders
+local-research/
 .cursor/
 .cursorindexingignore
 .repomix-output.txt
 .specstory/
+.dev.vars
+.wrangler/
+# SpecStory explanation file
+.specstory/.what-is-this.md

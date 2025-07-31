@@ -1,0 +1,28 @@
+{
+  "name": "discord-bot-webhook-receiver",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord bot interaction webhook receiver using Cloudflare Workers and Vite with Cloudflare Tunnel",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "dev:worker": "wrangler dev",
+    "dev:frontend": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "wrangler deploy",
+    "prepare": "vibe-rules install ${VIBE_RULES_EDITOR:-cursor}",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "discord-interactions": "^3.4.0",
+    "vibe-rules": "^0.3.60"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.10.2",
+    "vite-plugin-cloudflare-tunnel": "file:../..",
+    "vite": "^7.0.0",
+    "wrangler": "^4.0.0",
+    "internal-rules": "file:./rules"
+  }
+}

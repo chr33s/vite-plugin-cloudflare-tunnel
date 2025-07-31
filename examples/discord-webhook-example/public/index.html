@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot Webhook Receiver</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Discord Bot Webhook Receiver</h1>
+            <p>Powered by Cloudflare Workers, Cloudflare Tunnel & Vite</p>
+        </div>
+        
+        <div class="card">
+            <div class="setup-section">
+                <h2>🚀 Bot Setup Status <span id="setupStatus" class="status pending">Checking...</span></h2>
+                <p>Follow these steps to set up your Discord bot and start receiving interactions:</p>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 1: Create Discord Application</h3>
+                    <p style="margin: 0.5rem 0;">Create a new Discord application and bot:</p>
+                    <a href="https://discord.com/developers/applications" target="_blank" class="button">
+                        🔗 Open Discord Developer Portal
+                    </a>
+                    <div style="margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #28a745;">
+                        <h4 style="margin-top: 0; color: #155724;">Detailed Steps:</h4>
+                        <ol style="margin-left: 1rem; line-height: 1.6;">
+                            <li><strong>Click "New Application"</strong> in the top-right corner</li>
+                            <li><strong>Enter a name</strong> for your bot (e.g., "My Discord Bot")</li>
+                            <li><strong>Click "Create"</strong> to create the application</li>
+                        </ol>
+                        <p style="margin-bottom: 0; color: #155724; font-size: 0.9em;"><strong>💡 Tip:</strong> Keep this tab open - you'll need to come back to set the Interactions Endpoint URL in Step 2!</p>
+                    </div>
+                 </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 2: Set Discord Public Key</h3>
+                    <p style="margin: 0.5rem 0;">Enter your bot's public key from Discord Developer Portal:</p>
+                    
+                    <div style="margin: 1rem 0; padding: 1rem; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
+                        <h4 style="margin-top: 0; color: #1565c0;">Where to find your Public Key:</h4>
+                        <ol style="margin-left: 1rem; line-height: 1.6; color: #1565c0;">
+                            <li><strong>In Discord Developer Portal</strong>, go to your application</li>
+                            <li><strong>Navigate to "General Information"</strong> section</li>
+                            <li><strong>Copy the "Public Key"</strong> (64 character hex string)</li>
+                        </ol>
+                    </div>
+                    
+                    <div style="margin: 1rem 0;">
+                        <label for="discordPublicKey" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Discord Public Key:</label>
+                        <input 
+                            type="text" 
+                            id="discordPublicKey" 
+                            placeholder="Enter your 64-character Discord public key here..." 
+                            style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px; font-family: monospace; font-size: 0.9rem;"
+                            maxlength="64"
+                        />
+                        <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+                            <button id="setPublicKeyBtn" class="button" type="button">🔑 Set Public Key</button>
+                            <span id="publicKeyStatus" style="font-weight: 600;">❌ Not Set</span>
+                        </div>
+                        <p style="margin: 0.5rem 0; font-size: 0.85em; color: #666;">
+                            <strong>💡 Tip:</strong> This will be stored in memory for this session. In development mode, it will also be saved as a Cloudflare secret.
+                        </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 2.5: Set Discord Bot Token (Optional)</h3>
+                    <p style="margin: 0.5rem 0;">Enter your bot token to enable DM functionality and advanced features:</p>
+                    
+                    <div style="margin: 1rem 0; padding: 1rem; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                        <h4 style="margin-top: 0; color: #856404;">Where to find your Bot Token:</h4>
+                        <ol style="margin-left: 1rem; line-height: 1.6; color: #856404;">
+                            <li><strong>In Discord Developer Portal</strong>, go to your application</li>
+                            <li><strong>Navigate to "Bot"</strong> section in the left sidebar</li>
+                            <li><strong>Under "Token" section</strong>, click "Copy" to get your bot token</li>
+                            <li><strong>⚠️ Keep this token secret!</strong> Anyone with this token can control your bot</li>
+                        </ol>
+                        <p style="margin-bottom: 0; color: #856404; font-size: 0.9em;"><strong>Note:</strong> The bot token is optional but required for DM authorization and advanced Discord features.</p>
+                    </div>
+                    
+                    <div style="margin: 1rem 0;">
+                        <label for="discordBotToken" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Discord Bot Token:</label>
+                        <input 
+                            type="password" 
+                            id="discordBotToken" 
+                            placeholder="Enter your Discord bot token here..." 
+                            style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px; font-family: monospace; font-size: 0.9rem;"
+                        />
+                        <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+                            <button id="setBotTokenBtn" class="button secondary" type="button">🤖 Set Bot Token</button>
+                            <span id="botTokenStatus" style="font-weight: 600;">❌ Not Set</span>
+                        </div>
+                        <p style="margin: 0.5rem 0; font-size: 0.85em; color: #666;">
+                            <strong>💡 Tip:</strong> This enables DM authorization and other bot features. Token stored securely in memory for this session.
+                        </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 3: Configure Interactions Endpoint</h3>
+                    <p style="margin: 0.5rem 0;">Copy this URL to your bot's Interactions Endpoint URL:</p>
+                    <div class="code-block" id="webhookUrl">Loading...</div>
+                        <button class="button secondary" id="copyWebhookBtn" style="margin-top: 0.5rem;">📋 Copy to Clipboard</button>
+                    <div style="margin-top: 1rem; padding: 1rem; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                        <h4 style="margin-top: 0; color: #856404;">Where to paste this URL:</h4>
+                        <ol style="margin-left: 1rem; line-height: 1.6; color: #856404;">
+                            <li><strong>In your Discord Developer Portal</strong>, go to the <strong>"General Information"</strong> section</li>
+                            <li><strong>Scroll down to the "Interactions Endpoint URL"</strong> section</li>
+                            <li><strong>Paste the URL above</strong> into this field</li>
+                            <li><strong>Click "Save Changes"</strong></li>
+                            <li><strong>Discord will verify the endpoint</strong> - you should see a green checkmark if successful</li>
+                        </ol>
+                        <p style="margin-bottom: 0; color: #856404; font-size: 0.9em;"><strong>⚠️ Important:</strong> Make sure you've set your public key above before Discord tries to verify the endpoint!</p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 4: Create /task Command</h3>
+                    <p style="margin: 0.5rem 0;">Register a powerful `/task` command that can help with task management:</p>
+                    <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <button class="button" onclick="registerTaskCommand()">🎯 Register /task Command</button>
+                        <span id="taskCommandStatus" style="font-weight: 600;">❌ Not Registered</span>
+                    </div>
+                    <div style="margin-top: 0.5rem;">
+                        <button class="button secondary" onclick="viewRegisteredCommands()" style="font-size: 0.9em;">📋 View All Registered Commands</button>
+                    </div>
+                    
+                    <div style="margin-top: 1rem; padding: 1rem; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
+                        <h4 style="margin-top: 0; color: #1565c0;">📋 The /task command will include:</h4>
+                        <ul style="margin-left: 1rem; color: #1565c0; line-height: 1.6;">
+                            <li>🆕 <strong>create</strong> - Create a new task with title and description</li>
+                            <li>📋 <strong>list</strong> - List all your tasks</li>
+                            <li>✅ <strong>complete</strong> - Mark a task as completed</li>
+                            <li>🗑️ <strong>delete</strong> - Delete a task</li>
+                        </ul>
+                        <p style="margin: 0.5rem 0 0 0; color: #1565c0; font-size: 0.9em;">
+                            <strong>Note:</strong> Global commands can take up to 1 hour to propagate, but guild commands are instant!
+                        </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 5: Add Bot to Your Server</h3>
+                    <p style="margin: 0.5rem 0;">Generate an OAuth2 invite link to add your bot to a Discord server:</p>
+                    
+                    <p style="margin: 0.5rem 0;">Use the following link to invite your bot to a Discord server:</p>
+                    <div class="code-block" id="inviteUrl" style="word-break: break-all;">
+                        Loading invite link...
+                    </div>
+                    <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+                        <button id="copyInviteBtn" class="button secondary">📋 Copy Invite Link</button>
+                        <button id="refreshInviteBtn" class="button secondary">🔄 Refresh Link</button>
+                        <span id="inviteStatus" style="font-weight: 600;">❌ Not Generated</span>
+                    </div>
+                    <p style="margin-top: 1rem; font-size: 0.9em; color: #666;">
+                        Open the link in your browser, choose a server where you have <em>Manage Server</em> permission, and click <strong>Authorize</strong>.
+                    </p>
+                </div>
+                
+                <div id="inviteExample" style="display: none; margin: 1rem 0;">
+                    <h4>Example Invite URL Structure:</h4>
+                    <div class="code-block" style="word-break: break-all;">
+https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID
+                    </div>
+                    <p style="margin-top: 1rem; font-size: 0.9em; color: #666;">
+                        Replace <code>YOUR_APPLICATION_ID</code> with your bot's Application ID.
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>📊 Recent Interactions</h2>
+                <button id="refreshButton" class="button" onclick="refreshInteractions()" style="margin-bottom: 1rem;">🔄 Refresh</button>
+                <div id="interactionsList" class="interactions-list">
+                    <div class="no-interactions">No interactions received yet. Try using a slash command in Discord!</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>🔧 Debug Info & TypeScript Demo</h2>
+                <div id="debugInfo">
+                    <p><strong>Status:</strong> <span id="serverStatus">Checking...</span></p>
+                    <p><strong>Webhook URL:</strong> <span id="debugWebhookUrl">Loading...</span></p>
+                    <p><strong>Public Key Set:</strong> <span id="debugPublicKeyStatus">Checking...</span></p>
+                    <p><strong>Bot Token Set:</strong> <span id="debugBotTokenStatus">Checking...</span></p>
+                    <p><strong>Total Interactions:</strong> <span id="totalInteractions">0</span></p>
+                    <hr style="margin: 1rem 0;">
+                    <p><strong>🎯 TypeScript Features:</strong></p>
+                    <ul style="margin-left: 1.5rem; margin-top: 0.5rem;">
+                        <li>✅ Full type safety with interfaces</li>
+                        <li>✅ Virtual module integration</li>
+                        <li>✅ Proper error handling</li>
+                        <li>✅ Type-safe API responses</li>
+                        <li>✅ Cloudflare Workers types</li>
+                    </ul>
+                </div>
+                
+                <button id="testButton" class="button secondary" onclick="testWebhook()" style="margin-top: 1rem;">🧪 Test Webhook Endpoint</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div id="successModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">
+                    <span>✅</span>
+                    <span id="modalTitleText">Discord Public Key Set Successfully!</span>
+                </h3>
+                <button class="modal-close" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="success-message" id="modalSuccessMessage">
+                    <strong>🎉 Great!</strong> Your Discord public key is now active and ready to use for this session.
+                </div>
+                
+                <div id="commandSection" class="command-section" style="display: none;">
+                    <h4>💡 To persist across dev server restarts:</h4>
+                    <div id="copyCommand" class="copy-command"></div>
+                    <button id="copyCommandBtn" class="copy-command-btn">
+                        <span>📋</span>
+                        <span id="copyBtnText">Copy Command</span>
+                    </button>
+                </div>
+                
+                <div id="nextStepsSection" class="next-steps">
+                    <h4>🚀 What's Next:</h4>
+                    <ol id="nextStepsList">
+                        <!-- Dynamic content -->
+                    </ol>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="button" id="modalContinueBtn">Continue to Step 3</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load TypeScript client -->
+    <script type="module" src="/src/client.ts"></script>
+</body>
+</html>
