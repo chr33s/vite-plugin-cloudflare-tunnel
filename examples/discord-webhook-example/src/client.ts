@@ -5,71 +5,8 @@
  * functionality of the Discord webhook example.
  */
 
-/**
- * Bot configuration information from the API
- */
-interface BotInfo {
-  hasPublicKey: boolean;
-  hasBotToken: boolean;
-  webhookUrl: string;
-  setupComplete: boolean;
-  taskCommandRegistered: boolean;
-  registeredCommands?: {
-    applicationId: string;
-    commands: Array<{
-      id: string;
-      name: string;
-      description: string;
-      type: number;
-      version: string;
-    }>;
-    total: number;
-  } | { error: string };
-}
+import type { BotInfo, StoredInteraction, InteractionsResponse, HealthResponse, TunnelUrlResponse } from "./types";
 
-/**
- * Stored interaction data structure (matches server-side interface)
- */
-interface StoredInteraction {
-  id: number;
-  timestamp: string;
-  type: string;
-  data?: {
-    name?: string;
-    [key: string]: any;
-  };
-  user?: {
-    id: string;
-    username: string;
-    discriminator: string;
-    avatar?: string;
-  };
-  raw: any;
-}
-
-/**
- * API response for interactions list
- */
-interface InteractionsResponse {
-  interactions: StoredInteraction[];
-}
-
-/**
- * Health check response from the worker
- */
-interface HealthResponse {
-  status: string;
-  timestamp: string;
-  interactions_received: number;
-}
-
-/**
- * Tunnel URL response (demonstrates virtual module usage)
- */
-interface TunnelUrlResponse {
-  tunnelUrl: string;
-  source: string;
-}
 
 // Global state
 let interactions: StoredInteraction[] = [];

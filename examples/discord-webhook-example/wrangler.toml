@@ -3,12 +3,13 @@ name = "discord-bot-webhook-receiver"
 main = "src/worker.ts"
 compatibility_date = "2025-07-01"
 
+
 # Environment variables
 [vars]
 # Add any non-secret environment variables here
 
-# KV namespace for storing interactions (optional)
-# [[kv_namespaces]]
-# binding = "INTERACTIONS"
-# id = "your-kv-namespace-id"
-# preview_id = "your-preview-kv-namespace-id"
+# D1 database for storing tasks
+[[d1_databases]]
+binding = "DB"
+database_name = "discord-bot-tasks"
+database_id = "your-database-id"

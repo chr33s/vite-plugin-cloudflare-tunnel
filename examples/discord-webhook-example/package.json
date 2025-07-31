@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "deploy": "wrangler deploy",
     "prepare": "vibe-rules install ${VIBE_RULES_EDITOR:-cursor}",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "set-secret": "node ./scripts/set-secret.mjs"
   },
   "dependencies": {
     "discord-interactions": "^3.4.0",

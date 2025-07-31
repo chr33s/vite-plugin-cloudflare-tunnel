@@ -1,10 +1,33 @@
 import { InteractionType, InteractionResponseType, verifyKey } from 'discord-interactions';
-
-
-
 import { getTunnelUrl } from 'virtual:vite-plugin-cloudflare-tunnel';
+import type { StoredInteraction, Task, CreateTaskInput, TaskListResponse } from "./types";
 
-
+// Cloudflare D1 types (available in @cloudflare/workers-types)
+declare global {
+  interface D1Database {
+    prepare(query: string): D1PreparedStatement;
+  }
+  
+  interface D1PreparedStatement {
+    bind(...values: any[]): D1PreparedStatement;
+    first<T = unknown>(colName?: string): Promise<T | null>;
+    run(): Promise<D1Result>;
+    all<T = unknown>(): Promise<D1Result<T[]>>;
+  }
+  
+  interface D1Result<T = unknown> {
+    results?: T;
+    success: boolean;
+    meta: {
+      duration: number;
+      changes: number;
+      last_row_id: number;
+      rows_read: number;
+      rows_written: number;
+    };
+    changes: number;
+  }
+}
 
 /**
  * Environment variables interface for the Cloudflare Worker
@@ -12,24 +35,8 @@ import { getTunnelUrl } from 'virtual:vite-plugin-cloudflare-tunnel';
 interface Env {
   DISCORD_PUBLIC_KEY?: string;
   DISCORD_BOT_TOKEN?: string;
+  DB: D1Database;
   // Add other environment variables as needed
-}
-
-/**
- * Stored interaction data structure
- */
-interface StoredInteraction {
-  id: number;
-  timestamp: string;
-  type: string;
-  data: any;
-  user?: {
-    id: string;
-    username: string;
-    discriminator: string;
-    avatar?: string;
-  };
-  raw: any;
 }
 
 /**
@@ -145,11 +152,141 @@ async function getCurrentApplication(env: Env): Promise<any> {
   }
 }
 
+/**
+ * Initialize the database with required tables (idempotent)
+ */
+async function initializeDatabase(env: Env): Promise<void> {
+  try {
+    // Create tasks table if it doesn't exist
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        priority TEXT DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+        status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    // Create index on user_id for better query performance
+    await env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)
+    `).run();
+
+    // Create index on status for filtering
+    await env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)
+    `).run();
+
+    console.log('✅ Database initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize database:', error);
+    throw error;
+  }
+}
+
+/**
+ * Task service functions for D1 database operations
+ */
+class TaskService {
+  constructor(private db: D1Database) {}
+
+  async createTask(userId: string, input: CreateTaskInput): Promise<Task> {
+    const now = new Date().toISOString();
+    const result = await this.db.prepare(`
+      INSERT INTO tasks (user_id, title, description, priority, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      RETURNING *
+    `).bind(
+      userId,
+      input.title,
+      input.description || '',
+      input.priority || 'medium',
+      now,
+      now
+    ).first<Task>();
+
+    if (!result) {
+      throw new Error('Failed to create task');
+    }
+
+    return result;
+  }
+
+  async listTasks(userId: string, status?: 'pending' | 'completed' | 'all'): Promise<TaskListResponse> {
+    let query = 'SELECT * FROM tasks WHERE user_id = ?';
+    const params: any[] = [userId];
+
+    if (status && status !== 'all') {
+      query += ' AND status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY created_at DESC';
+
+    const tasks = await this.db.prepare(query).bind(...params).all<Task>();
+
+    return {
+      tasks: tasks.results || [],
+      total: tasks.results?.length || 0
+    };
+  }
+
+  async getTask(userId: string, taskId: number): Promise<Task | null> {
+    const task = await this.db.prepare(`
+      SELECT * FROM tasks WHERE id = ? AND user_id = ?
+    `).bind(taskId, userId).first<Task>();
+
+    return task || null;
+  }
+
+  async completeTask(userId: string, taskId: number): Promise<Task | null> {
+    const now = new Date().toISOString();
+    
+    // First check if the task exists and belongs to the user
+    const existingTask = await this.getTask(userId, taskId);
+    if (!existingTask) {
+      return null;
+    }
+
+    const result = await this.db.prepare(`
+      UPDATE tasks 
+      SET status = 'completed', updated_at = ?
+      WHERE id = ? AND user_id = ?
+      RETURNING *
+    `).bind(now, taskId, userId).first<Task>();
+
+    return result || null;
+  }
+
+  async deleteTask(userId: string, taskId: number): Promise<boolean> {
+    // First check if the task exists and belongs to the user
+    const existingTask = await this.getTask(userId, taskId);
+    if (!existingTask) {
+      return false;
+    }
+
+    const result = await this.db.prepare(`
+      DELETE FROM tasks WHERE id = ? AND user_id = ?
+    `).bind(taskId, userId).run();
+
+    console.log('🔒 Deleted task', result);
+    return result.meta.changes > 0;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     
     console.log("request.url", request.url, url.pathname);
+    
+    // Initialize database on first request (idempotent)
+    await initializeDatabase(env);
+    
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -232,8 +369,8 @@ export default {
           // In development mode, provide helpful guidance for persisting the key
           if (isDevelopmentMode()) {
             result.message += ' (stored in memory for this session)';
-            result.developmentModeNote = 'For persistence across restarts, also run: wrangler secret put DISCORD_PUBLIC_KEY';
-            result.wranglerCommand = `echo "${publicKey}" | wrangler secret put DISCORD_PUBLIC_KEY`;
+            result.developmentModeNote = 'For persistence across restarts, run: npm run set-secret DISCORD_PUBLIC_KEY';
+            result.wranglerCommand = `npm run set-secret DISCORD_PUBLIC_KEY`;
             result.nextSteps = [
               'The public key is now active for this session',
               'To persist it across dev server restarts, copy the command above',
@@ -300,8 +437,8 @@ export default {
           // In development mode, provide helpful guidance for persisting the token
           if (isDevelopmentMode()) {
             result.message += ' (stored in memory for this session)';
-            result.developmentModeNote = 'For persistence across restarts, also run: wrangler secret put DISCORD_BOT_TOKEN';
-            result.wranglerCommand = `echo "${tokenPart}" | wrangler secret put DISCORD_BOT_TOKEN`;
+            result.developmentModeNote = 'For persistence across restarts, run: npm run set-secret DISCORD_BOT_TOKEN';
+            result.wranglerCommand = `npm run set-secret DISCORD_BOT_TOKEN`;
             result.nextSteps = [
               'The bot token is now active for this session',
               'To persist it across dev server restarts, copy the command above',
@@ -933,96 +1070,247 @@ async function handleDiscordInteraction(request: Request, env: Env): Promise<Res
       console.log('⚡ Handling slash command:', data?.name);
       
       if (data?.name === 'task') {
+        // Initialize task service for database operations
+        const taskService = new TaskService(env.DB);
+        const userId = user?.id || member?.user?.id;
+        
+        if (!userId) {
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: '❌ Unable to identify user. Please try again.',
+              flags: 64 // Ephemeral
+            }
+          };
+          break;
+        }
+        
         // Handle /task command with subcommands
         const subcommand = data.options?.[0];
         const subcommandName = subcommand?.name;
         
         switch (subcommandName) {
           case 'create':
-            const title = subcommand.options?.find((opt: any) => opt.name === 'title')?.value || 'Untitled Task';
-            const description = subcommand.options?.find((opt: any) => opt.name === 'description')?.value || 'No description provided';
-            const priority = subcommand.options?.find((opt: any) => opt.name === 'priority')?.value || 'medium';
-            
-            // Generate a simple task ID (in a real app, you'd use a database)
-            const taskId = Math.floor(Math.random() * 10000) + 1;
-            
-            const taskCreationEmbed = createTaskEmbed({
-              title: "✅ Task Created Successfully!",
-              color: 0x28a745,
-              fields: [
-                {
-                  name: "📋 Task ID",
-                  value: `#${taskId}`,
-                  inline: true
-                },
-                {
-                  name: "📝 Title",
-                  value: title,
-                  inline: true
-                },
-                {
-                  name: "⚡ Priority",
-                  value: priority.charAt(0).toUpperCase() + priority.slice(1),
-                  inline: true
-                },
-                {
-                  name: "📄 Description",
-                  value: description,
-                  inline: false
+            try {
+              const title = subcommand.options?.find((opt: any) => opt.name === 'title')?.value || 'Untitled Task';
+              const description = subcommand.options?.find((opt: any) => opt.name === 'description')?.value || '';
+              const priority = subcommand.options?.find((opt: any) => opt.name === 'priority')?.value || 'medium';
+              
+              // Create task in database
+              const newTask = await taskService.createTask(userId, {
+                title,
+                description,
+                priority: priority as 'low' | 'medium' | 'high' | 'urgent'
+              });
+              
+              const taskCreationEmbed = createTaskEmbed({
+                title: "✅ Task Created Successfully!",
+                color: 0x28a745,
+                fields: [
+                  {
+                    name: "📋 Task ID",
+                    value: `#${newTask.id}`,
+                    inline: true
+                  },
+                  {
+                    name: "📝 Title",
+                    value: newTask.title,
+                    inline: true
+                  },
+                  {
+                    name: "⚡ Priority",
+                    value: newTask.priority.charAt(0).toUpperCase() + newTask.priority.slice(1),
+                    inline: true
+                  },
+                  {
+                    name: "📄 Description",
+                    value: newTask.description || 'No description provided',
+                    inline: false
+                  }
+                ],
+                includeTimestamp: true
+              });
+              
+              response = createEmbedResponse(taskCreationEmbed, createTaskActionButtons(newTask.id));
+            } catch (error) {
+              console.error('Failed to create task:', error);
+              response = {
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: {
+                  content: '❌ Failed to create task. Please try again.',
+                  flags: 64 // Ephemeral
                 }
-              ],
-              includeTimestamp: true
-            });
-            
-            response = createEmbedResponse(taskCreationEmbed, createTaskActionButtons(taskId));
+              };
+            }
             break;
             
           case 'list':
-            const statusFilter = subcommand.options?.find((opt: any) => opt.name === 'status')?.value || 'all';
-            
-            response = {
-              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-              data: {
-                embeds: [{
-                  title: "📋 Your Task List",
-                  description: `**Filter:** ${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} tasks\n\n` +
-                              `*This is a demo - in a real application, you would store and retrieve tasks from a database like Cloudflare D1 or KV.*`,
-                  color: 0x5865f2,
-                  fields: [
-                    {
-                      name: "📝 Sample Task #1001",
-                      value: "📄 Learn Cloudflare Workers\n⚡ Priority: High\n✅ Status: Completed",
-                      inline: true
-                    },
-                    {
-                      name: "📝 Sample Task #1002", 
-                      value: "📄 Build Discord bot\n⚡ Priority: Medium\n⏳ Status: Pending",
-                      inline: true
-                    },
-                    {
-                      name: "📝 Sample Task #1003",
-                      value: "📄 Deploy to production\n⚡ Priority: Low\n⏳ Status: Pending", 
-                      inline: true
-                    }
-                  ],
-                  footer: {
-                    text: "💡 Use /task create to add new tasks"
-                  }
-                }]
-              },
-            };
+            try {
+              const statusFilter = subcommand.options?.find((opt: any) => opt.name === 'status')?.value || 'all';
+              
+              // Fetch tasks from database
+              const taskList = await taskService.listTasks(userId, statusFilter as 'pending' | 'completed' | 'all');
+              
+              const embed: any = {
+                title: "📋 Your Task List",
+                description: `**Filter:** ${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} tasks`,
+                color: 0x5865f2,
+                footer: {
+                  text: `💡 ${taskList.total} task${taskList.total === 1 ? '' : 's'} found • Use /task create to add new tasks`
+                }
+              };
+
+              if (taskList.tasks.length === 0) {
+                embed.description += `\n\n🔍 **No tasks found.**\n` +
+                  (statusFilter === 'all' ? 
+                    `You haven't created any tasks yet. Use \`/task create\` to get started!` :
+                    `No ${statusFilter} tasks found. Try changing the filter or create a new task.`);
+              } else {
+                // Add task fields (limit to 25 fields due to Discord embed limits)
+                const tasksToShow = taskList.tasks.slice(0, 25);
+                embed.fields = tasksToShow.map(task => {
+                  const statusEmoji = task.status === 'completed' ? '✅' : '⏳';
+                  const priorityEmoji = {
+                    'urgent': '🔴',
+                    'high': '🟠', 
+                    'medium': '🟡',
+                    'low': '🟢'
+                  }[task.priority] || '🟡';
+                  
+                  return {
+                    name: `📝 Task #${task.id}`,
+                    value: `**${task.title}**\n📄 ${task.description || 'No description'}\n${priorityEmoji} Priority: ${task.priority.charAt(0).toUpperCase() + task.priority.slice(1)}\n${statusEmoji} Status: ${task.status.charAt(0).toUpperCase() + task.status.slice(1)}`,
+                    inline: true
+                  };
+                });
+                
+                if (taskList.tasks.length > 25) {
+                  embed.description += `\n\n⚠️ Showing first 25 of ${taskList.total} tasks.`;
+                }
+              }
+              
+              response = {
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: {
+                  embeds: [embed]
+                }
+              };
+            } catch (error) {
+              console.error('Failed to list tasks:', error);
+              response = {
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: {
+                  content: '❌ Failed to retrieve tasks. Please try again.',
+                  flags: 64 // Ephemeral
+                }
+              };
+            }
             break;
             
           case 'complete':
-            const completeTaskId = subcommand.options?.find((opt: any) => opt.name === 'task_id')?.value;
-            
-            response = createEmbedResponse(createTaskCompletionEmbed(completeTaskId, 'command'));
+            try {
+              const completeTaskId = subcommand.options?.find((opt: any) => opt.name === 'task_id')?.value;
+              
+              if (!completeTaskId) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: '❌ Please provide a task ID.',
+                    flags: 64 // Ephemeral
+                  }
+                };
+                break;
+              }
+              
+              const taskIdNumber = parseInt(completeTaskId);
+              if (isNaN(taskIdNumber)) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: '❌ Invalid task ID. Please provide a valid number.',
+                    flags: 64 // Ephemeral
+                  }
+                };
+                break;
+              }
+              
+              // Complete the task in database
+              const completedTask = await taskService.completeTask(userId, taskIdNumber);
+              
+              if (!completedTask) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: `❌ Task #${taskIdNumber} not found or doesn't belong to you.`,
+                    flags: 64 // Ephemeral
+                  }
+                };
+              } else {
+                response = createEmbedResponse(createTaskCompletionEmbed(completedTask.id, 'command'));
+              }
+            } catch (error) {
+              console.error('Failed to complete task:', error);
+              response = {
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: {
+                  content: '❌ Failed to complete task. Please try again.',
+                  flags: 64 // Ephemeral
+                }
+              };
+            }
             break;
             
           case 'delete':
-            const deleteTaskId = subcommand.options?.find((opt: any) => opt.name === 'task_id')?.value;
-            
-            response = createEmbedResponse(createTaskDeletionEmbed(deleteTaskId, 'command'));
+            try {
+              const deleteTaskId = subcommand.options?.find((opt: any) => opt.name === 'task_id')?.value;
+              
+              if (!deleteTaskId) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: '❌ Please provide a task ID.',
+                    flags: 64 // Ephemeral
+                  }
+                };
+                break;
+              }
+              
+              const taskIdNumber = parseInt(deleteTaskId);
+              if (isNaN(taskIdNumber)) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: '❌ Invalid task ID. Please provide a valid number.',
+                    flags: 64 // Ephemeral
+                  }
+                };
+                break;
+              }
+              
+              // Delete the task from database
+              const deleted = await taskService.deleteTask(userId, taskIdNumber);
+              
+              if (!deleted) {
+                response = {
+                  type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                  data: {
+                    content: `❌ Task #${taskIdNumber} not found or doesn't belong to you.`,
+                    flags: 64 // Ephemeral
+                  }
+                };
+              } else {
+                response = createEmbedResponse(createTaskDeletionEmbed(taskIdNumber, 'command'));
+              }
+            } catch (error) {
+              console.error('Failed to delete task:', error);
+              response = {
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: {
+                  content: '❌ Failed to delete task. Please try again.',
+                  flags: 64 // Ephemeral
+                }
+              };
+            }
             break;
             
           default:
@@ -1053,13 +1341,88 @@ async function handleDiscordInteraction(request: Request, env: Env): Promise<Res
     case InteractionType.MESSAGE_COMPONENT:
       console.log('🔘 Handling button/component interaction');
       const buttonId = data?.custom_id;
+      const buttonUserId = user?.id || member?.user?.id;
       
       if (buttonId?.startsWith('complete_task_')) {
-        const taskId = buttonId.replace('complete_task_', '');
-        response = createEmbedResponse(createTaskCompletionEmbed(taskId, 'button'), undefined, 64);
+        try {
+          const taskId = parseInt(buttonId.replace('complete_task_', ''));
+          
+          if (!buttonUserId) {
+            response = {
+              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              data: {
+                content: '❌ Unable to identify user. Please try again.',
+                flags: 64 // Ephemeral
+              }
+            };
+            break;
+          }
+          
+          // Initialize task service and complete the task
+          const taskService = new TaskService(env.DB);
+          const completedTask = await taskService.completeTask(buttonUserId, taskId);
+          
+          if (!completedTask) {
+            response = {
+              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              data: {
+                content: `❌ Task #${taskId} not found or doesn't belong to you.`,
+                flags: 64 // Ephemeral
+              }
+            };
+          } else {
+            response = createEmbedResponse(createTaskCompletionEmbed(taskId, 'button'), undefined, 64);
+          }
+        } catch (error) {
+          console.error('Failed to complete task via button:', error);
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: '❌ Failed to complete task. Please try again.',
+              flags: 64 // Ephemeral
+            }
+          };
+        }
       } else if (buttonId?.startsWith('delete_task_')) {
-        const taskId = buttonId.replace('delete_task_', '');
-        response = createEmbedResponse(createTaskDeletionEmbed(taskId, 'button'), undefined, 64);
+        try {
+          const taskId = parseInt(buttonId.replace('delete_task_', ''));
+          
+          if (!buttonUserId) {
+            response = {
+              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              data: {
+                content: '❌ Unable to identify user. Please try again.',
+                flags: 64 // Ephemeral
+              }
+            };
+            break;
+          }
+          
+          // Initialize task service and delete the task
+          const taskService = new TaskService(env.DB);
+          const deleted = await taskService.deleteTask(buttonUserId, taskId);
+          
+          if (!deleted) {
+            response = {
+              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              data: {
+                content: `❌ Task #${taskId} not found or doesn't belong to you.`,
+                flags: 64 // Ephemeral
+              }
+            };
+          } else {
+            response = createEmbedResponse(createTaskDeletionEmbed(taskId, 'button'), undefined, 64);
+          }
+        } catch (error) {
+          console.error('Failed to delete task via button:', error);
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: '❌ Failed to delete task. Please try again.',
+              flags: 64 // Ephemeral
+            }
+          };
+        }
       } else if (buttonId === 'try_first_command') {
         response = {
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
