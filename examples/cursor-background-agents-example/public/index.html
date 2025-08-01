@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cursor Background Agents</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Cursor Background Agents</h1>
+            <p>Powered by Cloudflare Workers, Cloudflare Tunnel & Vite</p>
+        </div>
+        
+        <div class="card">
+            <div class="setup-section">
+                <h2>🚀 Service Setup Status <span id="setupStatus" class="status pending">Checking...</span></h2>
+                <p>Follow these steps to set up your Cursor Background Agents service:</p>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 1: Get Your Cursor API Key</h3>
+                    <p style="margin: 0.5rem 0;">Get your Cursor API key to create and manage background agents:</p>
+                    <a href="https://cursor.com/settings" target="_blank" class="button">
+                        🔗 Open Cursor Settings
+                    </a>
+                    <div style="margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #28a745;">
+                        <h4 style="margin-top: 0; color: #155724;">How to get your API key:</h4>
+                        <ol style="margin-left: 1rem; line-height: 1.6;">
+                            <li><strong>Open Cursor</strong> and go to Settings</li>
+                            <li><strong>Navigate to the "API" section</strong></li>
+                            <li><strong>Generate or copy your API key</strong></li>
+                            <li><strong>⚠️ Keep this key secure!</strong> It provides access to your Cursor account</li>
+                        </ol>
+                        <p style="margin-bottom: 0; color: #155724; font-size: 0.9em;"><strong>💡 Tip:</strong> Your API key allows creating background agents that can work on your repositories.</p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 2: Set Cursor API Key</h3>
+                    <p style="margin: 0.5rem 0;">Enter your Cursor API key to enable agent creation:</p>
+                    
+                    <div style="margin: 1rem 0;">
+                        <label for="cursorApiKey" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Cursor API Key:</label>
+                        <input 
+                            type="password" 
+                            id="cursorApiKey" 
+                            placeholder="Enter your Cursor API key here..." 
+                            style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px; font-family: monospace; font-size: 0.9rem;"
+                        />
+                        <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+                            <button id="setApiKeyBtn" class="button" type="button">🔑 Set API Key</button>
+                            <span id="apiKeyStatus" style="font-weight: 600;">❌ Not Set</span>
+                        </div>
+                        <p style="margin: 0.5rem 0; font-size: 0.85em; color: #666;">
+                            <strong>💡 Tip:</strong> This will be stored in memory for this session. In development mode, it will also be saved as a Cloudflare secret.
+                        </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 3: Configure Webhook Endpoint</h3>
+                    <p style="margin: 0.5rem 0;">Your webhook endpoint for receiving agent status updates:</p>
+                    <div class="code-block" id="webhookUrl">Loading...</div>
+                    <button class="button secondary" id="copyWebhookBtn" style="margin-top: 0.5rem;">📋 Copy to Clipboard</button>
+                    <div style="margin-top: 1rem; padding: 1rem; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
+                        <h4 style="margin-top: 0; color: #1565c0;">About Webhook Notifications:</h4>
+                        <ul style="margin-left: 1rem; line-height: 1.6; color: #1565c0;">
+                            <li><strong>Automatic status updates</strong> when agents finish or encounter errors</li>
+                            <li><strong>Real-time notifications</strong> in the dashboard below</li>
+                            <li><strong>Secure webhook verification</strong> using HMAC signatures</li>
+                        </ul>
+                        <p style="margin-bottom: 0; color: #1565c0; font-size: 0.9em;"><strong>Note:</strong> Webhooks are automatically configured when creating agents with the "Use Webhooks" option enabled.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="create-agent-section">
+                <h2>🚀 Create New Agent</h2>
+                <p>Create a new Cursor background agent to work on your code:</p>
+                
+                <div style="margin: 1rem 0;">
+                    <label for="agentPrompt" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Agent Instructions:</label>
+                    <textarea 
+                        id="agentPrompt" 
+                        placeholder="Enter detailed instructions for what you want the agent to do. Be specific about the changes, features, or fixes you want implemented..."
+                        style="width: 100%; height: 120px; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px; font-family: inherit; resize: vertical;"
+                    ></textarea>
+                </div>
+                
+                <div style="margin: 1rem 0;">
+                    <label for="agentRepository" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Repository URL:</label>
+                    <input 
+                        type="url" 
+                        id="agentRepository" 
+                        list="repoHistory"
+                        placeholder="https://github.com/username/repository" 
+                        style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px;"
+                    />
+                    <datalist id="repoHistory"></datalist>
+                    <p style="margin: 0.25rem 0; font-size: 0.85em; color: #666;">
+                        Must be a complete GitHub URL starting with https://github.com/
+                    </p>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0;">
+                    <div>
+                        <label for="agentModel" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Model (Optional):</label>
+                        <select 
+                            id="agentModel" 
+                            style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px;"
+                        >
+                            <option value="">Default Model</option>
+                            <option value="claude-4-sonnet-thinking">Claude 4 Sonnet Thinking</option>
+                            <option value="claude-4-opus-thinking">Claude 4 Opus Thinking</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label for="agentBranch" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Source Branch (Optional):</label>
+                        <input 
+                            type="text" 
+                            id="agentBranch" 
+                            placeholder="main, develop, feature-branch..." 
+                            style="width: 100%; padding: 0.75rem; border: 2px solid #ddd; border-radius: 8px;"
+                        />
+                    </div>
+                </div>
+                
+                <div style="margin: 1rem 0;">
+                    <h4 style="margin-bottom: 0.5rem;">Agent Options:</h4>
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <label style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="autoCreatePr" checked />
+                            <span>🔄 Automatically create Pull Request when finished</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="useWebhook" checked />
+                            <span>📡 Enable webhook notifications for real-time updates</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <button id="createAgentBtn" class="button" type="button" style="width: 100%; font-size: 1.1rem; padding: 1rem;">
+                    🚀 Create Agent
+                </button>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>📊 Recent Agents</h2>
+                <button id="refreshButton" class="button" onclick="refreshAgents()" style="margin-bottom: 1rem;">🔄 Refresh</button>
+                <div id="agentsList" class="agents-list">
+                    <div class="no-agents">No agents created yet. Create your first agent using the form above!</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>🔧 Debug Info & Service Status</h2>
+                <div id="debugInfo">
+                    <p><strong>Service Status:</strong> <span id="serverStatus">Checking...</span></p>
+                    <p><strong>Webhook URL:</strong> <span id="debugWebhookUrl">Loading...</span></p>
+                    <p><strong>API Key Set:</strong> <span id="debugApiKeyStatus">Checking...</span></p>
+                    <p><strong>Total Agents:</strong> <span id="totalAgents">0</span></p>
+                    <p><strong>Active Agents:</strong> <span id="activeAgents">0</span></p>
+                    <hr style="margin: 1rem 0;">
+                    <p><strong>🎯 Cursor Features:</strong></p>
+                    <ul style="margin-left: 1.5rem; margin-top: 0.5rem;">
+                        <li>✅ Background agent creation</li>
+                        <li>✅ Real-time status monitoring</li>
+                        <li>✅ Webhook notifications</li>
+                        <li>✅ Pull request automation</li>
+                        <li>✅ Multi-model support</li>
+                    </ul>
+                </div>
+                
+                <button id="testButton" class="button secondary" onclick="testService()" style="margin-top: 1rem;">🧪 Test Service Endpoint</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div id="successModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">
+                    <span>✅</span>
+                    <span id="modalTitleText">Cursor API Key Set Successfully!</span>
+                </h3>
+                <button class="modal-close" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="success-message" id="modalSuccessMessage">
+                    <strong>🎉 Great!</strong> Your Cursor API key is now active and ready to use for this session.
+                </div>
+                
+                <div id="commandSection" class="command-section" style="display: none;">
+                    <h4>💡 To persist across dev server restarts:</h4>
+                    <div id="copyCommand" class="copy-command"></div>
+                    <button id="copyCommandBtn" class="copy-command-btn">
+                        <span>📋</span>
+                        <span id="copyBtnText">Copy Command</span>
+                    </button>
+                </div>
+                
+                <div id="nextStepsSection" class="next-steps">
+                    <h4>🚀 What's Next:</h4>
+                    <ol id="nextStepsList">
+                        <!-- Dynamic content -->
+                    </ol>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="button" id="modalContinueBtn">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load TypeScript client -->
+    <script type="module" src="/src/client.ts"></script>
+</body>
+</html>

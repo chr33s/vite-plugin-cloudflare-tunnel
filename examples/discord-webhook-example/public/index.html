@@ -126,7 +126,7 @@
                         <span id="taskCommandStatus" style="font-weight: 600;">❌ Not Registered</span>
                     </div>
                     <div style="margin-top: 0.5rem;">
-                        <button class="button secondary" onclick="viewRegisteredCommands()" style="font-size: 0.9em;">📋 View All Registered Commands</button>
+                        <button class="button secondary" onclick="loadRegisteredCommands()" style="font-size: 0.9em;">📋 Manage Registered Commands</button>
                     </div>
                     
                     <div style="margin-top: 1rem; padding: 1rem; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
@@ -140,6 +140,77 @@
                         <p style="margin: 0.5rem 0 0 0; color: #1565c0; font-size: 0.9em;">
                             <strong>Note:</strong> Global commands can take up to 1 hour to propagate, but guild commands are instant!
                         </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 4.5: Create /feedback Command (Modal Demo)</h3>
+                    <p style="margin: 0.5rem 0;">Register the `/feedback` command to demonstrate secure modal forms:</p>
+                    <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <button class="button" onclick="registerFeedbackCommand()">📝 Register /feedback Command</button>
+                        <span id="feedbackCommandStatus" style="font-weight: 600;">❌ Not Registered</span>
+                    </div>
+                    
+                    <div style="margin-top: 1rem; padding: 1rem; background: #fff3e0; border-radius: 8px; border-left: 4px solid #ff9800;">
+                        <h4 style="margin-top: 0; color: #e65100;">🔐 Security Features of Modal Forms:</h4>
+                        <ul style="margin-left: 1rem; color: #e65100; line-height: 1.6;">
+                            <li>🌱 <strong>Private Input</strong> - User input is never visible in chat channels</li>
+                            <li>🔒 <strong>Secure Collection</strong> - Perfect for sensitive information like API keys</li>
+                            <li>🛡️ <strong>No Chat History</strong> - Input doesn't appear in Discord's message history</li>
+                            <li>🚀 <strong>Direct to Database</strong> - Data flows securely from modal to storage</li>
+                        </ul>
+                        <p style="margin: 0.5rem 0 0 0; color: #e65100; font-size: 0.9em;">
+                            <strong>Use Case:</strong> This fixes the security issue identified in the Discord Cursor Bot plan review!
+                        </p>
+                    </div>
+                    
+                    <div style="margin-top: 1rem; padding: 1rem; background: #e8f5e8; border-radius: 8px; border-left: 4px solid #28a745;">
+                        <h4 style="margin-top: 0; color: #155724;">📝 Try the /feedback Command:</h4>
+                        <ol style="margin-left: 1rem; color: #155724; line-height: 1.6;">
+                            <li><strong>Use /feedback</strong> in any Discord channel or DM</li>
+                            <li><strong>Modal opens</strong> with secure input fields</li>
+                            <li><strong>Fill out:</strong> Category, Message, and Rating (1-5)</li>
+                            <li><strong>Submit securely</strong> - data goes directly to database</li>
+                        </ol>
+                        <p style="margin: 0.5rem 0 0 0; color: #155724; font-size: 0.9em;">
+                            <strong>Perfect for:</strong> User feedback, bug reports, feature requests, or any sensitive data collection!
+                        </p>
+                    </div>
+                </div>
+                
+                <div style="margin: 1.5rem 0;">
+                    <h3>Step 4.75: Manage Registered Commands</h3>
+                    <p style="margin: 0.5rem 0;">View and manage all commands registered with Discord:</p>
+                    
+                    <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <button class="button secondary" onclick="loadRegisteredCommands()">🔄 Refresh Commands</button>
+                        <span id="commandsStatus" style="font-weight: 600;">Click to load</span>
+                    </div>
+                    
+                    <div style="margin-top: 1rem;">
+                        <div id="commandsList" class="commands-list" style="display: none;">
+                            <div class="command-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; font-weight: 600;">
+                                <span>Command Name</span>
+                                <span>Actions</span>
+                            </div>
+                            <div id="commandsContainer"></div>
+                        </div>
+                        <div id="noCommands" style="display: none; padding: 1rem; background: #f8f9fa; border-radius: 8px; text-align: center; color: #666;">
+                            No commands registered yet. Register some commands first!
+                        </div>
+                        <div id="commandsError" style="display: none; padding: 1rem; background: #f8d7da; border-radius: 8px; color: #721c24;">
+                            <!-- Error message will be inserted here -->
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 1rem; padding: 1rem; background: #fff3e0; border-radius: 8px; border-left: 4px solid #ff9800;">
+                        <h4 style="margin-top: 0; color: #e65100;">⚠️ Important Notes:</h4>
+                        <ul style="margin-left: 1rem; color: #e65100; line-height: 1.6;">
+                            <li><strong>Global Commands</strong> - Can take up to 1 hour to register/delete across Discord</li>
+                            <li><strong>Guild Commands</strong> - Instant registration/deletion but only work in specific servers</li>
+                            <li><strong>Deletion Warning</strong> - Deleting a command removes it permanently from Discord</li>
+                            <li><strong>Rate Limits</strong> - Discord has rate limits on command registration/deletion</li>
+                        </ul>
                     </div>
                 </div>
                 
@@ -183,6 +254,19 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID
             </div>
             
             <div class="card">
+                <h2>📝 Modal Feedback Submissions</h2>
+                <button id="refreshFeedbackButton" class="button" onclick="refreshFeedback()" style="margin-bottom: 1rem;">🔄 Refresh Feedback</button>
+                <div id="feedbackList" class="interactions-list">
+                    <div class="no-interactions">No feedback received yet. Try using the /feedback command in Discord!</div>
+                </div>
+                <div style="margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 8px; font-size: 0.9em;">
+                    <p><strong>🔐 Security Demo:</strong> This shows feedback collected through secure Discord modals.</p>
+                    <p><strong>Total Feedback:</strong> <span id="totalFeedback">0</span></p>
+                    <p style="margin-bottom: 0;"><strong>✨ Features:</strong> Private input, no chat history, secure storage</p>
+                </div>
+            </div>
+            
+            <div class="card">
                 <h2>🔧 Debug Info & TypeScript Demo</h2>
                 <div id="debugInfo">
                     <p><strong>Status:</strong> <span id="serverStatus">Checking...</span></p>
@@ -198,6 +282,7 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID
                         <li>✅ Proper error handling</li>
                         <li>✅ Type-safe API responses</li>
                         <li>✅ Cloudflare Workers types</li>
+                        <li>🔐 <strong>Secure Discord Modals</strong> - Raw API implementation</li>
                     </ul>
                 </div>
                 

@@ -24,6 +24,7 @@ export interface BotInfo {
   webhookUrl: string;
   setupComplete: boolean;
   taskCommandRegistered: boolean;
+  feedbackCommandRegistered: boolean;
   registeredCommands?: {
     applicationId: string;
     commands: Array<{
@@ -72,4 +73,20 @@ export interface CreateTaskInput {
 export interface TaskListResponse {
   tasks: Task[];
   total: number;
+}
+
+export interface FeedbackEntry {
+  id: number;
+  user_id: string;
+  username: string;
+  category: string;
+  message: string;
+  rating: number | null;
+  timestamp: string;
+}
+
+export interface FeedbackListResponse {
+  feedback: FeedbackEntry[];
+  total: number;
+  message: string;
 }

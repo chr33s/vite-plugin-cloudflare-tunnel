@@ -365,7 +365,8 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
   // Basic input validation
   if (!isQuickMode && (!hostname || typeof hostname !== "string")) {
     throw new Error("[cloudflare-tunnel] hostname is required and must be a valid string in named tunnel mode");
-  } else {
+  }
+  if (hostname) {
     tunnelUrl = `https://${hostname}`;
   }
 
@@ -857,6 +858,7 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
       const newConfigHash = JSON.stringify({ isQuickMode, hostname, port, tunnelName, dnsOption, sslOption });
 
       if (globalState.child && !globalState.child.killed && globalState.configHash === newConfigHash) {
+        tunnelUrl = await globalState.tunnelUrl ?? "";
         console.log('[cloudflare-tunnel] Config unchanged – re-using existing tunnel');
         // Reset shutdown flag in case it was set from a previous shutdown
         globalState.shuttingDown = false;
@@ -1372,17 +1374,17 @@ function cloudflareTunnel(options: CloudflareTunnelOptions = {}): Plugin {
           console.log(`[cloudflare-tunnel] Added ${hostname} to allowed hosts`);
         }
       }
-      return {
-        build: {
-          rollupOptions: {
-            output: {
-              manualChunks: {
-                "vite-plugin-cloudflare-tunnel": [VIRTUAL_MODULE_ID]
-              }
-            }
-          }
-        }
-      }
+      // return {
+      //   build: {
+      //     rollupOptions: {
+      //       output: {
+      //         manualChunks: {
+      //           "vite-plugin-cloudflare-tunnel": [VIRTUAL_MODULE_ID]
+      //         }
+      //       }
+      //     }
+      //   }
+      // }
     },
 
     configureServer(server) {

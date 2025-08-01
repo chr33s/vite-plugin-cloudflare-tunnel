@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Cursor Bot - Agent Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Discord Cursor Bot</h1>
+            <p>Monitor your Cursor agents created via Discord</p>
+        </div>
+        
+        <div class="card">
+            <h2>🔗 Add Bot to Discord Server</h2>
+            <p>Use this link to add the bot to your Discord server:</p>
+            <div class="code-block" id="inviteUrl" style="word-break: break-all;">
+                Loading invite link...
+            </div>
+            <div style="margin-top: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+                <button id="copyInviteBtn" class="button secondary">📋 Copy Invite Link</button>
+                <button id="refreshInviteBtn" class="button secondary">🔄 Refresh Link</button>
+                <span id="inviteStatus" style="font-weight: 600;">❌ Not Generated</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>🚀 Getting Started</h2>
+            <p>Welcome to Discord Cursor Bot! This bot lets you create and manage Cursor background agents directly from Discord. Here's how to get started:</p>
+            
+            <div class="getting-started-steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>🔑 Set Your API Key</h3>
+                        <p>First, set your Cursor API key for the channel (this is done securely via a private modal):</p>
+                        <div class="code-block"><code>/agents set-api-key</code></div>
+                        <p class="tip">💡 Each Discord channel can have its own API key for team isolation</p>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>⚡ Quick Task Creation</h3>
+                        <p>Create an agent with a simple task using the quick command:</p>
+                        <div class="code-block"><code>/task Fix the login button styling issue</code></div>
+                        <p class="tip">💡 Set a default repository with <code>/agents set-default-repo</code> to make this even faster</p>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>🎯 Full Agent Creation</h3>
+                        <p>Create an agent with a specific repository and detailed instructions:</p>
+                        <div class="code-block"><code>/agents create prompt:"Add user authentication with OAuth" repository:"https://github.com/yourorg/yourrepo"</code></div>
+                        <p class="tip">💡 The bot creates a dedicated Discord thread for each agent's progress updates</p>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h3>🔄 Follow-up & Refinement</h3>
+                        <p>Continue the conversation with your agent directly in the thread:</p>
+                        <div class="example-thread">
+                            <div class="thread-message bot">🚀 <strong>Agent Created Successfully!</strong><br>
+                            <strong>Agent ID:</strong> <code>agent_abc123</code><br>
+                            <strong>Task:</strong> Add user authentication with OAuth</div>
+                            <div class="thread-message user">Can you also add password reset functionality?</div>
+                            <div class="thread-message bot">🔄 <strong>Follow-up Message Sent</strong><br>
+                            Your follow-up request has been sent to the agent.</div>
+                        </div>
+                        <p class="tip">💡 Just reply in the thread - the bot will automatically send your message to the agent</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>🛠️ Available Commands</h2>
+            <div class="commands-grid">
+                <div class="command-card">
+                    <h3>/agents set-api-key</h3>
+                    <p>Set your Cursor API key for this channel (secure modal input)</p>
+                    <div class="command-tags">
+                        <span class="tag setup">Setup</span>
+                        <span class="tag secure">Secure</span>
+                    </div>
+                </div>
+
+                <div class="command-card">
+                    <h3>/task [prompt]</h3>
+                    <p>Quick way to create an agent with your default repository</p>
+                    <div class="command-tags">
+                        <span class="tag quick">Quick</span>
+                        <span class="tag popular">Popular</span>
+                    </div>
+                </div>
+
+                <div class="command-card">
+                    <h3>/agents create</h3>
+                    <p>Create an agent with custom prompt and repository URL</p>
+                    <div class="command-tags">
+                        <span class="tag full">Full Control</span>
+                    </div>
+                </div>
+
+                <div class="command-card">
+                    <h3>/agents list [limit]</h3>
+                    <p>List all agents in this channel with their current status</p>
+                    <div class="command-tags">
+                        <span class="tag info">Info</span>
+                    </div>
+                </div>
+
+                <div class="command-card">
+                    <h3>/agent logs [agent_id]</h3>
+                    <p>View the full conversation history for a specific agent</p>
+                    <div class="command-tags">
+                        <span class="tag debug">Debug</span>
+                    </div>
+                </div>
+
+                <div class="command-card">
+                    <h3>/agents set-default-repo</h3>
+                    <p>Set a default repository for quick /task commands</p>
+                    <div class="command-tags">
+                        <span class="tag setup">Setup</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>💡 Pro Tips</h2>
+            <div class="tips-grid">
+                <div class="tip-card">
+                    <div class="tip-icon">🧵</div>
+                    <div class="tip-content">
+                        <h4>Thread Conversations</h4>
+                        <p>Each agent gets its own Discord thread. You can continue the conversation by simply replying in the thread - no need for special commands!</p>
+                    </div>
+                </div>
+
+                <div class="tip-card">
+                    <div class="tip-icon">🔄</div>
+                    <div class="tip-content">
+                        <h4>Real-time Updates</h4>
+                        <p>Get live progress updates as your agent works. You'll see status changes, branch names, and pull request links automatically.</p>
+                    </div>
+                </div>
+
+                <div class="tip-card">
+                    <div class="tip-icon">👥</div>
+                    <div class="tip-content">
+                        <h4>Team Collaboration</h4>
+                        <p>Each Discord channel can have its own API key, making it perfect for different teams or projects to use their own Cursor accounts.</p>
+                    </div>
+                </div>
+
+                <div class="tip-card">
+                    <div class="tip-icon">🎯</div>
+                    <div class="tip-content">
+                        <h4>Clear Instructions</h4>
+                        <p>Be specific in your prompts! The more context you provide, the better your agent will understand and execute the task.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>📊 Active Agents</h2>
+                <button id="refreshButton" class="button">🔄 Refresh</button>
+                <div id="agentsList" class="agents-list">
+                    <div class="no-agents">No agents found. Create agents using Discord slash commands!</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/src/client.js"></script>
+</body>
+</html>

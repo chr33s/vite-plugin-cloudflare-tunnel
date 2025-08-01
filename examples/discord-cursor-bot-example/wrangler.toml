@@ -1,0 +1,29 @@
+# Cloudflare Workers configuration
+name = "discord-cursor-bot"
+main = "./src/worker.ts"
+compatibility_date = "2025-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+
+# Environment variables
+[vars]
+# Add any non-secret environment variables here
+
+# D1 database for storing agents and webhook events
+[[d1_databases]]
+binding = "DB"
+database_name = "discord-cursor-agents"
+database_id = "9f2b7d0c-6004-45c9-b2a9-85fd442cca80"
+migrations_table = "wrangler_migrations"
+migrations_dir = "migrations"
+
+# KV namespace for storing API keys by channel ID
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "82f4f91af5314fc4a25006431c98d5f6"
+
+# Database migrations will be handled separately
+
+[assets]
+run_worker_first = false
+not_found_handling = "single-page-application"

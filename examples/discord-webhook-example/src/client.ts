@@ -5,11 +5,12 @@
  * functionality of the Discord webhook example.
  */
 
-import type { BotInfo, StoredInteraction, InteractionsResponse, HealthResponse, TunnelUrlResponse } from "./types";
+import type { BotInfo, StoredInteraction, InteractionsResponse, HealthResponse, TunnelUrlResponse, FeedbackEntry, FeedbackListResponse } from "./types";
 
 
 // Global state
 let interactions: StoredInteraction[] = [];
+let feedbackEntries: FeedbackEntry[] = [];
 
 async function getTunnelUrl(): Promise<string> {
   const req = await fetch('/tunnel-url');
@@ -60,7 +61,8 @@ async function loadBotInfo(): Promise<void> {
         hasBotToken: false,
         webhookUrl: `${tunnelUrl}/discord/interactions`,
         setupComplete: false,
-        taskCommandRegistered: false
+        taskCommandRegistered: false,
+        feedbackCommandRegistered: false
       };
     }
     
@@ -75,6 +77,7 @@ async function loadBotInfo(): Promise<void> {
     updateElement('botTokenStatus', botInfo.hasBotToken ? '✅ Set' : '❌ Not Set');
     updateElement('debugBotTokenStatus', botInfo.hasBotToken ? '✅ Set' : '❌ Not Set');
     updateElement('taskCommandStatus', botInfo.taskCommandRegistered ? '✅ Registered' : '❌ Not Registered');
+    updateElement('feedbackCommandStatus', botInfo.feedbackCommandRegistered ? '✅ Registered' : '❌ Not Registered');
     
     const statusEl = document.getElementById('setupStatus');
     if (statusEl) {
@@ -135,6 +138,55 @@ function renderInteractions(): void {
       </div>
     </div>
   `).join('');
+}
+
+/**
+ * Fetch and display recent feedback from the API
+ */
+async function refreshFeedback(): Promise<void> {
+  try {
+    const response = await fetch('/api/feedback');
+    const data: FeedbackListResponse = await response.json();
+    feedbackEntries = data.feedback;
+    
+    updateElement('totalFeedback', feedbackEntries.length.toString());
+    renderFeedback();
+  } catch (error) {
+    console.error('Failed to load feedback:', error);
+  }
+}
+
+/**
+ * Render the feedback list in the UI
+ */
+function renderFeedback(): void {
+  const container = document.getElementById('feedbackList');
+  if (!container) return;
+  
+  if (feedbackEntries.length === 0) {
+    container.innerHTML = '<div class="no-interactions">No feedback received yet. Try using the /feedback command in Discord!</div>';
+    return;
+  }
+  
+  container.innerHTML = feedbackEntries.map(feedback => {
+    const ratingStars = feedback.rating ? '★'.repeat(feedback.rating) + '☆'.repeat(5 - feedback.rating) : 'No rating';
+    const truncatedMessage = feedback.message.length > 100 ? 
+      feedback.message.substring(0, 100) + '...' : feedback.message;
+    
+    return `
+      <div class="interaction-item">
+        <div class="interaction-header">
+          <span class="interaction-type">${escapeHtml(feedback.category)}</span>
+          <span class="interaction-time">${new Date(feedback.timestamp).toLocaleTimeString()}</span>
+        </div>
+        <div>
+          <strong>User:</strong> ${escapeHtml(feedback.username)}<br>
+          <strong>Rating:</strong> ${ratingStars}<br>
+          <strong>Message:</strong> ${escapeHtml(truncatedMessage)}
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 /**
@@ -334,6 +386,11 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshButton.addEventListener('click', refreshInteractions);
   }
   
+  const refreshFeedbackButton = document.getElementById('refreshFeedbackButton');
+  if (refreshFeedbackButton) {
+    refreshFeedbackButton.addEventListener('click', refreshFeedback);
+  }
+  
   const testButton = document.getElementById('testButton');
   if (testButton) {
     testButton.addEventListener('click', testWebhook);
@@ -402,9 +459,11 @@ document.addEventListener('DOMContentLoaded', () => {
     generateInviteLink();
   });
   refreshInteractions();
+  refreshFeedback();
   
   // Set up periodic updates
   setInterval(refreshInteractions, 5000); // Refresh interactions every 5 seconds
+  setInterval(refreshFeedback, 5000); // Refresh feedback every 5 seconds
   setInterval(checkServerStatus, 10000);  // Check server status every 10 seconds
 });
 
@@ -688,26 +747,168 @@ async function copyInviteLink(): Promise<void> {
 }
 
 /**
- * View registered commands from Discord API
+ * Load and display registered commands in the UI
  */
-async function viewRegisteredCommands(): Promise<void> {
+async function loadRegisteredCommands(): Promise<void> {
+  const commandsStatus = document.getElementById('commandsStatus');
+  const commandsList = document.getElementById('commandsList');
+  const noCommands = document.getElementById('noCommands');
+  const commandsError = document.getElementById('commandsError');
+  const commandsContainer = document.getElementById('commandsContainer');
+  
+  if (!commandsStatus || !commandsList || !noCommands || !commandsError || !commandsContainer) return;
+  
+  // Reset UI
+  commandsList.style.display = 'none';
+  noCommands.style.display = 'none';
+  commandsError.style.display = 'none';
+  
+  // Show loading state
+  commandsStatus.textContent = '⏳ Loading...';
+  commandsStatus.style.color = '#ffc107';
+  
   try {
     const response = await fetch('/api/registered-commands');
     const result = await response.json();
     
     if (response.ok && result.commands) {
       const commands = result.commands;
-      const commandsList = commands.map((cmd: any) => 
-        `• /${cmd.name} - ${cmd.description}`
-      ).join('\n');
       
-      alert(`📋 Registered Discord Commands (${commands.length} total):\n\n${commandsList || 'No commands registered yet.'}\n\nApplication ID: ${result.applicationId}`);
+      if (commands.length === 0) {
+        commandsStatus.textContent = 'No commands found';
+        commandsStatus.style.color = '#666';
+        noCommands.style.display = 'block';
+      } else {
+        commandsStatus.textContent = `${commands.length} command${commands.length !== 1 ? 's' : ''} found`;
+        commandsStatus.style.color = '#28a745';
+        renderCommands(commands);
+        commandsList.style.display = 'block';
+      }
     } else {
       throw new Error(result.error || 'Failed to fetch commands');
     }
   } catch (error) {
     console.error('Failed to fetch registered commands:', error);
-    alert(`❌ Failed to fetch registered commands: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    commandsStatus.textContent = 'Failed to load';
+    commandsStatus.style.color = '#dc3545';
+    commandsError.style.display = 'block';
+    commandsError.innerHTML = `<strong>Error:</strong> ${error instanceof Error ? error.message : 'Unknown error occurred'}`;
+  }
+}
+
+/**
+ * Render commands in the UI
+ */
+function renderCommands(commands: any[]): void {
+  const commandsContainer = document.getElementById('commandsContainer');
+  if (!commandsContainer) return;
+  
+  commandsContainer.innerHTML = commands.map(cmd => `
+    <div class="command-item" id="command-${cmd.id}">
+      <div class="command-info">
+        <div class="command-name">/${escapeHtml(cmd.name)}</div>
+        <div class="command-description">${escapeHtml(cmd.description)}</div>
+        <div class="command-meta">
+          <span class="command-type-badge badge-global">Global</span>
+          ID: ${escapeHtml(cmd.id)} • Version: ${escapeHtml(cmd.version)}
+        </div>
+      </div>
+      <div class="command-actions">
+        <button 
+          class="command-delete-btn" 
+          onclick="deleteCommand('${escapeHtml(cmd.id)}', '${escapeHtml(cmd.name)}')"
+          title="Delete this command permanently"
+        >
+          🗑️ Delete
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/**
+ * Delete a registered command
+ */
+async function deleteCommand(commandId: string, commandName: string): Promise<void> {
+  // Confirm deletion
+  const confirmed = confirm(
+    `⚠️ Delete Command: /${commandName}\n\n` +
+    `This will permanently remove the command from Discord.\n` +
+    `Global commands can take up to 1 hour to disappear.\n\n` +
+    `Are you sure you want to continue?`
+  );
+  
+  if (!confirmed) return;
+  
+  const commandItem = document.getElementById(`command-${commandId}`);
+  const deleteBtn = commandItem?.querySelector('.command-delete-btn') as HTMLButtonElement;
+  
+  if (!commandItem || !deleteBtn) return;
+  
+  // Show loading state
+  commandItem.classList.add('deleting');
+  deleteBtn.disabled = true;
+  deleteBtn.textContent = '⏳ Deleting...';
+  
+  try {
+    const response = await fetch('/api/delete-command', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ commandId }),
+    });
+    
+    const result = await response.json();
+    
+    if (response.ok) {
+      // Remove the command item with animation
+      commandItem.style.transition = 'all 0.3s ease';
+      commandItem.style.opacity = '0';
+      commandItem.style.transform = 'translateX(-100%)';
+      
+      setTimeout(() => {
+        commandItem.remove();
+        
+        // Check if there are any commands left
+        const remainingCommands = document.querySelectorAll('.command-item');
+        if (remainingCommands.length === 0) {
+          const commandsList = document.getElementById('commandsList');
+          const noCommands = document.getElementById('noCommands');
+          const commandsStatus = document.getElementById('commandsStatus');
+          
+          if (commandsList && noCommands && commandsStatus) {
+            commandsList.style.display = 'none';
+            noCommands.style.display = 'block';
+            commandsStatus.textContent = 'No commands found';
+            commandsStatus.style.color = '#666';
+          }
+        } else {
+          // Update status count
+          const commandsStatus = document.getElementById('commandsStatus');
+          if (commandsStatus) {
+            commandsStatus.textContent = `${remainingCommands.length} command${remainingCommands.length !== 1 ? 's' : ''} found`;
+          }
+        }
+      }, 300);
+      
+      // Show success message
+      alert(`✅ Command /${commandName} has been deleted successfully!\n\nNote: Global commands can take up to 1 hour to disappear from Discord.`);
+      
+      // Update bot info to refresh command status
+      await loadBotInfo();
+    } else {
+      throw new Error(result.error || 'Failed to delete command');
+    }
+  } catch (error) {
+    console.error('Failed to delete command:', error);
+    
+    // Reset UI state
+    commandItem.classList.remove('deleting');
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = '🗑️ Delete';
+    
+    alert(`❌ Failed to delete command /${commandName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -783,8 +984,84 @@ async function registerTaskCommand(): Promise<void> {
   }
 }
 
+/**
+ * Register the /feedback command globally with Discord
+ */
+async function registerFeedbackCommand(): Promise<void> {
+  const statusEl = document.getElementById('feedbackCommandStatus');
+  if (!statusEl) return;
+  
+  // Check if we have the required configuration
+  const botInfo = await getBotInfo();
+  if (!botInfo || !botInfo.hasPublicKey) {
+    alert('Please set your Discord public key first (Step 2).');
+    return;
+  }
+  
+  if (!botInfo.hasBotToken) {
+    alert('Please set your Discord bot token first (Step 2.5). The bot token is required to register commands.');
+    return;
+  }
+  
+  // Check if the command is already registered
+  if (botInfo.feedbackCommandRegistered) {
+    alert('✅ The /feedback command is already registered with Discord!\n\n' +
+          '📝 What it does:\n' +
+          '• Opens a secure modal form for feedback collection\n' +
+          '• Protects sensitive input from being visible in chat\n' +
+          '• Stores feedback securely in the database\n\n' +
+          '🎁 Try using the command in Discord now!');
+    return;
+  }
+  
+  // Update status to show we're working
+  statusEl.textContent = '⏳ Registering...';
+  statusEl.style.color = '#ffc107';
+  
+  try {
+    const response = await fetch('/api/register-feedback-command', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    const result = await response.json();
+    
+    if (response.ok) {
+      statusEl.textContent = '✅ Registered Successfully';
+      statusEl.style.color = '#28a745';
+      
+      // Show success message with details
+      alert(`🎉 Success! The /feedback command has been registered globally with Discord.\n\n` +
+            `📝 What you can do now:\n` +
+            `• Use /feedback in any channel or DM\n` +
+            `• A secure modal form will open for your input\n` +
+            `• Your feedback is collected privately and securely\n` +
+            `• No sensitive information appears in chat history\n\n` +
+            `🔐 Security Benefits:\n` +
+            `• Input is never logged in public channels\n` +
+            `• Feedback is stored securely in the database\n` +
+            `• Perfect for sensitive information collection\n\n` +
+            `⏰ Note: Global commands can take up to 1 hour to appear in Discord. ` +
+            `Try using the command after a few minutes!`);
+            
+      // Refresh bot info to update the status
+      await loadBotInfo();
+    } else {
+      throw new Error(result.error || 'Failed to register command');
+    }
+  } catch (error) {
+    console.error('Failed to register /feedback command:', error);
+    statusEl.textContent = '❌ Registration Failed';
+    statusEl.style.color = '#dc3545';
+    alert(`Failed to register /feedback command: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
 // Export functions for HTML onclick handlers (for backward compatibility)
 (window as any).refreshInteractions = refreshInteractions;
+(window as any).refreshFeedback = refreshFeedback;
 (window as any).showCommandExample = showCommandExample;
 (window as any).showInviteExample = showInviteExample;
 (window as any).showCodebotCommand = showCodebotCommand;
@@ -796,6 +1073,8 @@ async function registerTaskCommand(): Promise<void> {
 (window as any).hideSuccessModal = hideSuccessModal;
 (window as any).copyWranglerCommand = copyWranglerCommand;
 (window as any).registerTaskCommand = registerTaskCommand;
+(window as any).registerFeedbackCommand = registerFeedbackCommand;
 (window as any).generateInviteLink = generateInviteLink;
 (window as any).copyInviteLink = copyInviteLink;
-(window as any).viewRegisteredCommands = viewRegisteredCommands;
+(window as any).loadRegisteredCommands = loadRegisteredCommands;
+(window as any).deleteCommand = deleteCommand;

@@ -72,8 +72,16 @@ interface InteractionResponse {
         emoji?: {
           name: string;
         };
+        // Modal text input properties
+        placeholder?: string;
+        required?: boolean;
+        min_length?: number;
+        max_length?: number;
       }>;
     }>;
+    // Modal-specific properties
+    custom_id?: string;
+    title?: string;
   };
 }
 
@@ -306,12 +314,44 @@ export default {
         return okJson({ interactions: interactions.slice(0, 20) });
       }
       
+      // API endpoint to get recent feedback
+      if (url.pathname === '/api/feedback' && request.method === 'GET') {
+        try {
+          await initializeFeedbackTable(env);
+          
+          // Fetch recent feedback from database (limit to 50)
+          const result = await env.DB.prepare(`
+            SELECT id, user_id, username, category, message, rating, timestamp
+            FROM feedback 
+            ORDER BY timestamp DESC 
+            LIMIT 50
+          `).all();
+          
+          const feedback = result.results || [];
+          
+          return okJson({ 
+            feedback,
+            total: feedback.length,
+            message: `Retrieved ${feedback.length} feedback entries`
+          });
+          
+        } catch (error) {
+          console.error('Failed to fetch feedback:', error);
+          return errorJson(
+            'Failed to fetch feedback',
+            error instanceof Error ? error.message : 'Unknown error',
+            500
+          );
+        }
+      }
+      
       // API endpoint to get bot info
       if (url.pathname === '/api/bot-info' && request.method === 'GET') {
         const effectivePublicKey = getDiscordPublicKey(env);
         const effectiveBotToken = getDiscordBotToken(env);
         
         let taskCommandRegistered = false;
+        let feedbackCommandRegistered = false;
         let commandsInfo = null;
         
         // Check if commands are registered by querying Discord API
@@ -320,6 +360,7 @@ export default {
             const commandsResult = await getRegisteredCommands(env);
             commandsInfo = commandsResult;
             taskCommandRegistered = commandsResult.commands.some(cmd => cmd.name === 'task');
+            feedbackCommandRegistered = commandsResult.commands.some(cmd => cmd.name === 'feedback');
           } catch (error) {
             console.warn('Failed to check registered commands:', error);
             commandsInfo = { error: 'Failed to fetch commands from Discord API' };
@@ -332,6 +373,7 @@ export default {
           webhookUrl: `${url.origin}/discord/interactions`,
           setupComplete: !!effectivePublicKey, // Public key is required, bot token is optional
           taskCommandRegistered,
+          feedbackCommandRegistered,
           registeredCommands: commandsInfo
         };
         return okJson(botInfo);
@@ -492,6 +534,74 @@ export default {
         }
       }
       
+      // API endpoint to delete a registered command
+      if (url.pathname === '/api/delete-command' && request.method === 'POST') {
+        try {
+          const effectiveBotToken = getDiscordBotToken(env);
+          
+          if (!effectiveBotToken) {
+            return errorJson(
+              'Discord bot token not configured',
+              'Please set the Discord bot token first to delete commands'
+            );
+          }
+          
+          const requestData = await request.json() as { commandId: string };
+          const { commandId } = requestData;
+          
+          if (!commandId) {
+            return errorJson(
+              'Missing command ID',
+              'Command ID is required to delete a command'
+            );
+          }
+          
+          // Get the application ID using our helper function
+          let applicationId: string;
+          try {
+            const appInfo = await getCurrentApplication(env);
+            applicationId = appInfo.id;
+          } catch (error) {
+            return errorJson(
+              'Failed to fetch application info',
+              'Unable to get application ID from Discord API',
+              400,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
+          }
+          
+          // Delete the command from Discord
+          const deleteResponse = await discordApiRequest(
+            `/applications/${applicationId}/commands/${commandId}`,
+            {
+              method: 'DELETE',
+              botToken: effectiveBotToken,
+            }
+          );
+          
+          if (!deleteResponse.ok) {
+            const errorData = await deleteResponse.json().catch(() => ({ error: 'Unknown error' }));
+            throw new Error(errorData.message || errorData.error || `Discord API returned ${deleteResponse.status}`);
+          }
+          
+          // Return success response
+          return okJson({
+            success: true,
+            message: 'Command deleted successfully',
+            commandId,
+            note: 'Global commands can take up to 1 hour to disappear from Discord'
+          });
+          
+        } catch (error) {
+          console.error('Error deleting command:', error);
+          return errorJson(
+            'Failed to delete command',
+            error instanceof Error ? error.message : 'Unknown error',
+            400
+          );
+        }
+      }
+      
       // API endpoint to generate invite link
       if (url.pathname === '/api/invite-link' && request.method === 'GET') {
         try {
@@ -531,6 +641,86 @@ export default {
           console.error('Error generating invite link:', error);
           return errorJson(
             'Failed to generate invite link',
+            error instanceof Error ? error.message : 'Unknown error',
+            500
+          );
+        }
+      }
+      
+      // API endpoint to register /feedback command globally
+      if (url.pathname === '/api/register-feedback-command' && request.method === 'POST') {
+        try {
+          const effectivePublicKey = getDiscordPublicKey(env);
+          const effectiveBotToken = getDiscordBotToken(env);
+          
+          if (!effectivePublicKey) {
+            return errorJson(
+              'Discord public key not configured',
+              'Please set the Discord public key first'
+            );
+          }
+          
+          if (!effectiveBotToken) {
+            return errorJson(
+              'Discord bot token not configured',
+              'Please set the Discord bot token first - it\'s required to register commands'
+            );
+          }
+          
+          // Get the application ID
+          let applicationId: string;
+          try {
+            const appInfo = await getCurrentApplication(env);
+            applicationId = appInfo.id;
+          } catch (error) {
+            return errorJson(
+              'Failed to fetch application info',
+              'Unable to get application ID from Discord API',
+              400,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
+          }
+          
+          // Define the /feedback command
+          const feedbackCommand = {
+            name: 'feedback',
+            description: 'Provide feedback about this bot (opens secure modal form)',
+            type: 1, // CHAT_INPUT
+          };
+          
+          // Register the command with Discord
+          const discordResponse = await discordApiRequest(`/applications/${applicationId}/commands`, {
+            method: 'POST',
+            body: feedbackCommand,
+            botToken: effectiveBotToken
+          });
+          
+          if (!discordResponse.ok) {
+            const error = await discordResponse.json();
+            console.error('Discord API error:', error);
+            return errorJson(
+              'Failed to register command with Discord',
+              'Discord API returned an error',
+              400,
+              error
+            );
+          }
+          
+          const commandData = await discordResponse.json();
+          console.log('✅ /feedback command registered successfully:', commandData.id);
+          
+          return okJson({
+            success: true,
+            message: '/feedback command registered successfully',
+            commandId: commandData.id,
+            applicationId: applicationId,
+            commandData: commandData
+          });
+          
+        } catch (error) {
+          console.error('Error registering /feedback command:', error);
+          return errorJson(
+            'Failed to register command',
             error instanceof Error ? error.message : 'Unknown error',
             500
           );
@@ -794,13 +984,16 @@ export default {
         message: 'Discord Bot Webhook Receiver - Cloudflare Worker',
         endpoints: {
           '/discord/interactions': 'POST - Discord webhook endpoint',
-          '/api/interactions': 'GET - Recent interactions',
+          '/api/interactions': 'GET - Recent Discord interactions',
+          '/api/feedback': 'GET - Recent modal feedback submissions',
           '/api/bot-info': 'GET - Bot configuration status',
           '/api/registered-commands': 'GET - Get registered Discord commands',
+          '/api/delete-command': 'POST - Delete a registered Discord command',
           '/api/set-public-key': 'POST - Set Discord public key',
           '/api/set-bot-token': 'POST - Set Discord bot token',
           '/api/invite-link': 'GET - Generate Discord invite link',
           '/api/register-task-command': 'POST - Register /task command globally',
+          '/api/register-feedback-command': 'POST - Register /feedback command globally',
           '/discord/validate': 'GET - Discord endpoint validation info',
           '/tunnel-url': 'GET - Get tunnel URL (development only)',
           '/health': 'GET - Enhanced health check with Discord status',
@@ -1327,6 +1520,76 @@ async function handleDiscordInteraction(request: Request, env: Env): Promise<Res
               },
             };
         }
+      } else if (data?.name === 'feedback') {
+        // Handle /feedback command - shows a modal for secure input
+        const userId = user?.id || member?.user?.id;
+        
+        if (!userId) {
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: '❌ Unable to identify user. Please try again.',
+              flags: 64 // Ephemeral
+            }
+          };
+          break;
+        }
+        
+        // Create and show modal
+        response = {
+          type: 9, // MODAL
+          data: {
+            custom_id: 'feedback_modal',
+            title: 'Share Your Feedback',
+            components: [
+              {
+                type: 1, // ACTION_ROW
+                components: [
+                  {
+                    type: 4, // TEXT_INPUT
+                    custom_id: 'feedback_category',
+                    style: 1, // Short
+                    label: 'Category',
+                    placeholder: 'e.g., Bug Report, Feature Request, General',
+                    required: true,
+                    min_length: 3,
+                    max_length: 50
+                  }
+                ]
+              },
+              {
+                type: 1, // ACTION_ROW
+                components: [
+                  {
+                    type: 4, // TEXT_INPUT
+                    custom_id: 'feedback_message',
+                    style: 2, // Paragraph
+                    label: 'Your Feedback',
+                    placeholder: 'Please describe your feedback in detail...',
+                    required: true,
+                    min_length: 10,
+                    max_length: 1000
+                  }
+                ]
+              },
+              {
+                type: 1, // ACTION_ROW
+                components: [
+                  {
+                    type: 4, // TEXT_INPUT
+                    custom_id: 'feedback_rating',
+                    style: 1, // Short
+                    label: 'Rating (1-5)',
+                    placeholder: '5 = Excellent, 1 = Poor',
+                    required: false,
+                    min_length: 1,
+                    max_length: 1
+                  }
+                ]
+              }
+            ]
+          }
+        };
       } else {
         // Handle other commands with generic response
         response = {
@@ -1483,6 +1746,113 @@ async function handleDiscordInteraction(request: Request, env: Env): Promise<Res
             content: `🤔 **Unknown button interaction!**\n\nButton ID: \`${buttonId || 'undefined'}\`\n\nThis response came from your Cloudflare Worker via Cloudflare Tunnel! 🚀⚡`,
             flags: 64 // Ephemeral message (only visible to the user)
           },
+        };
+      }
+      break;
+
+    case InteractionType.MODAL_SUBMIT:
+      console.log('📝 Handling modal submission');
+      const modalId = data?.custom_id;
+      const modalUserId = user?.id || member?.user?.id;
+      
+      if (modalId === 'feedback_modal') {
+        try {
+          if (!modalUserId) {
+            response = {
+              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              data: {
+                content: '❌ Unable to identify user. Please try again.',
+                flags: 64 // Ephemeral
+              }
+            };
+            break;
+          }
+          
+          // Extract form data from modal components
+          const components = data.components || [];
+          const category = components[0]?.components[0]?.value || 'General';
+          const message = components[1]?.components[0]?.value || '';
+          const rating = components[2]?.components[0]?.value || null;
+          
+          // Validate rating if provided
+          let validRating: number | null = null;
+          if (rating) {
+            const ratingNum = parseInt(rating);
+            if (!isNaN(ratingNum) && ratingNum >= 1 && ratingNum <= 5) {
+              validRating = ratingNum;
+            }
+          }
+          
+          // Store feedback in database
+          await initializeFeedbackTable(env);
+          const feedbackId = await storeFeedback(env, {
+            userId: modalUserId,
+            username: user?.username || member?.user?.username || 'Unknown',
+            category,
+            message,
+            rating: validRating,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Create success response
+          const successEmbed = {
+            title: '✅ Feedback Submitted Successfully!',
+            description: 'Thank you for your valuable feedback. Your input helps us improve!',
+            color: 0x28a745,
+            fields: [
+              {
+                name: '📝 Feedback ID',
+                value: `#${feedbackId}`,
+                inline: true
+              },
+              {
+                name: '📂 Category',
+                value: category,
+                inline: true
+              },
+              {
+                name: '⭐ Rating',
+                value: validRating ? `${validRating}/5 stars` : 'Not provided',
+                inline: true
+              },
+              {
+                name: '💬 Your Message',
+                value: message.length > 100 ? message.substring(0, 100) + '...' : message,
+                inline: false
+              }
+            ],
+            footer: {
+              text: '🚀 Powered by Cloudflare Workers + Secure Modals'
+            },
+            timestamp: new Date().toISOString()
+          };
+          
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              embeds: [successEmbed],
+              flags: 64 // Ephemeral - only visible to the user
+            }
+          };
+          
+        } catch (error) {
+          console.error('Failed to process feedback submission:', error);
+          response = {
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: '❌ Failed to submit feedback. Please try again.',
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+      } else {
+        // Unknown modal
+        response = {
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: {
+            content: `🤔 **Unknown modal submission**: \`${modalId || 'undefined'}\`\n\nThis response came from your Cloudflare Worker! 🚀`,
+            flags: 64 // Ephemeral
+          }
         };
       }
       break;
@@ -1763,4 +2133,79 @@ function createTaskDeletionEmbed(taskId: string | number, source: 'command' | 'b
     }],
     footerText: "Use /task create to add new tasks"
   });
+}
+
+/**
+ * Initialize feedback table in D1 database (idempotent)
+ */
+async function initializeFeedbackTable(env: Env): Promise<void> {
+  try {
+    // Create feedback table if it doesn't exist
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    // Create index on user_id for better query performance
+    await env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id)
+    `).run();
+
+    // Create index on timestamp for chronological queries
+    await env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_feedback_timestamp ON feedback(timestamp)
+    `).run();
+
+    console.log('✅ Feedback table initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize feedback table:', error);
+    throw error;
+  }
+}
+
+/**
+ * Store feedback in the database
+ */
+async function storeFeedback(env: Env, feedback: {
+  userId: string;
+  username: string;
+  category: string;
+  message: string;
+  rating: number | null;
+  timestamp: string;
+}): Promise<number> {
+  try {
+    const result = await env.DB.prepare(`
+      INSERT INTO feedback (user_id, username, category, message, rating, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      feedback.userId,
+      feedback.username,
+      feedback.category,
+      feedback.message,
+      feedback.rating,
+      feedback.timestamp
+    ).run();
+
+    const feedbackId = result.meta.last_row_id;
+    console.log('✅ Feedback stored successfully:', {
+      id: feedbackId,
+      userId: feedback.userId,
+      category: feedback.category,
+      rating: feedback.rating
+    });
+
+    return feedbackId;
+  } catch (error) {
+    console.error('❌ Failed to store feedback:', error);
+    throw error;
+  }
 }

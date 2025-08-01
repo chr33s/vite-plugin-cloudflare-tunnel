@@ -108,12 +108,12 @@ body {
     overflow-x: auto;
 }
 
-.interactions-list {
+.agents-list {
     max-height: 400px;
     overflow-y: auto;
 }
 
-.interaction-item {
+.agent-item {
     border: 1px solid #e9ecef;
     border-radius: 8px;
     padding: 1rem;
@@ -121,44 +121,139 @@ body {
     background: #f8f9fa;
 }
 
-.interaction-header {
+.agent-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 0.5rem;
 }
 
-.interaction-type {
-    background: #5865f2;
-    color: white;
+.agent-status {
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     font-size: 0.75rem;
     font-weight: 600;
+    color: white;
 }
 
-.interaction-time {
+.agent-status.status-pending {
+    background: #ffc107;
+    color: #212529;
+}
+
+.agent-status.status-running {
+    background: #007bff;
+}
+
+.agent-status.status-creating {
+    background: #6f42c1;
+}
+
+.agent-status.status-finished {
+    background: #28a745;
+}
+
+.agent-status.status-error {
+    background: #dc3545;
+}
+
+.agent-status.status-expired {
+    background: #6c757d;
+}
+
+.agent-time {
     color: #6c757d;
     font-size: 0.875rem;
 }
 
-.no-interactions {
+.agent-details {
+    margin: 0.5rem 0;
+    line-height: 1.5;
+}
+
+.agent-details div {
+    margin-bottom: 0.25rem;
+}
+
+.agent-error {
+    color: #dc3545;
+    font-weight: 500;
+}
+
+.agent-actions {
+    margin-top: 0.75rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.no-agents {
     text-align: center;
     color: #6c757d;
     padding: 2rem;
     font-style: italic;
 }
 
-.grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 1.5rem;
+/* Modal styles for logs and output */
+.logs-modal, .output-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
 }
 
-@media (max-width: 1200px) {
-    .grid {
-        grid-template-columns: 1fr 1fr;
-    }
+.logs-modal-content, .output-modal-content {
+    background: white;
+    border-radius: 8px;
+    max-width: 80%;
+    max-height: 80%;
+    width: 600px;
+    display: flex;
+    flex-direction: column;
+}
+
+.logs-modal-header, .output-modal-header {
+    padding: 1rem;
+    border-bottom: 1px solid #e9ecef;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logs-modal-close, .output-modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: #6c757d;
+}
+
+.logs-modal-body, .output-modal-body {
+    padding: 1rem;
+    overflow: auto;
+    flex: 1;
+}
+
+.logs-text, .output-text {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 4px;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 0.875rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
 }
 
 @media (max-width: 768px) {
@@ -339,108 +434,42 @@ body {
     text-align: right;
 }
 
-/* Commands List Styles */
-.commands-list {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    overflow: hidden;
-    background: white;
-}
-
-.command-item {
+/* Chat conversation styles inside logs modal */
+.chat-container {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem;
-    border-bottom: 1px solid #f0f0f0;
-    transition: background-color 0.2s ease;
+    flex-direction: column;
+    gap: 0.75rem;
 }
 
-.command-item:last-child {
-    border-bottom: none;
-}
-
-.command-item:hover {
-    background-color: #f8f9fa;
-}
-
-.command-info {
-    flex: 1;
-}
-
-.command-name {
-    font-weight: 600;
-    color: #5865f2;
-    margin-bottom: 0.25rem;
-    font-family: monospace;
-    font-size: 1rem;
-}
-
-.command-description {
-    color: #666;
-    font-size: 0.9rem;
-    margin-bottom: 0.25rem;
-}
-
-.command-meta {
-    font-size: 0.8rem;
-    color: #999;
-}
-
-.command-actions {
+.chat-message {
     display: flex;
     gap: 0.5rem;
-    align-items: center;
+    align-items: flex-start;
 }
 
-.command-delete-btn {
-    background: #dc3545;
-    color: white;
-    border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.85rem;
-    transition: all 0.2s ease;
-    font-weight: 500;
+.chat-message.user {
+    justify-content: flex-end;
 }
 
-.command-delete-btn:hover {
-    background: #c82333;
-    transform: translateY(-1px);
+.chat-message.user .chat-bubble {
+    background: #e9ecef;
+    color: #212529;
 }
 
-.command-delete-btn:active {
-    transform: translateY(0);
+.chat-message.assistant .chat-bubble {
+    background: #5865f2;
+    color: #fff;
 }
 
-.command-delete-btn:disabled {
-    background: #6c757d;
-    cursor: not-allowed;
-    transform: none;
+.chat-avatar {
+    font-size: 1.25rem;
+    line-height: 1.25rem;
 }
 
-.deleting {
-    opacity: 0.6;
-    pointer-events: none;
-}
-
-.command-type-badge {
-    display: inline-block;
-    padding: 0.2rem 0.5rem;
-    border-radius: 12px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.badge-global {
-    background: #28a745;
-    color: white;
-}
-
-.badge-guild {
-    background: #17a2b8;
-    color: white;
+.chat-bubble {
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    max-width: 80%;
+    white-space: pre-wrap;
+    line-height: 1.4;
 }

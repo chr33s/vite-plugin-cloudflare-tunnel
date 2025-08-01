@@ -36,5 +36,5 @@ declare module 'virtual:vite-plugin-cloudflare-tunnel' {
    * @note This function is only available during development mode.
    * In production builds, this virtual module will not be available.
    */
-  export function getTunnelUrl(): string;
+  export function getTunnelUrl(): `https://${string}`;
 }
