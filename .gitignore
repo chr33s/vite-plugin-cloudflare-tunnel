@@ -105,6 +105,7 @@ local-research/
 .cursor/
 .cursorindexingignore
 .repomix-output.txt
+.repomix-*
 .specstory/
 .dev.vars
 .wrangler/
