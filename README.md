@@ -90,30 +90,30 @@ Your local server is now accessible at `https://dev.yourdomain.com` 🎉
 ### For Named Tunnel Mode  
 - **Cloudflare Account** with a domain added to your account
 - **Cloudflare API Token** with the following permissions:
-  - `Zone:Zone:Read`
-  - `Zone:DNS:Edit` 
-  - `Account:Cloudflare Tunnel:Edit`
+  - Account level: `Cloudflare Tunnel:Edit`
+  - Zone level (for each domain): `SSL and Certificates:Edit`, `DNS:Edit`
 - **Node.js** 16.0.0 or higher
 
 ## 🔑 Cloudflare API Token Setup
 
-> **Note:** Only required for Named Tunnel Mode. Quick Tunnel Mode works without any API token.
+> **Note:** Only required for Named Tunnel Mode when a hostname is specified. Quick Tunnel Mode works without any API token.
 
 1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Click **"Create Token"**
-3. Use **"Custom token"** with these permissions:
+3. We recommend using **Account tokens**, but Personal tokens can also be used
+4. Configure the token with these permissions:
 
-   **Zone permissions:**
-   - `Zone:Zone:Read`
-   - `Zone:DNS:Edit`
+   **Account level permissions:**
+   - `Cloudflare Tunnel:Edit`
 
-   **Account permissions:**
-   - `Account:Cloudflare Tunnel:Edit`
+   **Zone level permissions (for each zone/domain you want to use for tunnel hostnames):**
+   - `SSL and Certificates:Edit`
+   - `DNS:Edit`
 
    **Zone Resources:** Include - All zones (or specific zone)  
    **Account Resources:** Include - All accounts (or specific account)
 
-4. Copy the generated token and configure it:
+5. Copy the generated token and configure it:
    ```bash
    # Option 1: Environment variable
    export CLOUDFLARE_API_KEY="your-token-here"
